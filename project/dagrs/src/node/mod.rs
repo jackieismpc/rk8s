@@ -73,7 +73,12 @@ pub trait Node: Send + Sync {
     }
 
     /// Reset the node state to its initial state.
-    /// This is called before the graph starts running or when the graph is reset.
+    ///
+    /// # Behavior
+    /// - This method is **optional**. The default implementation does nothing.
+    /// - It is **ONLY** called when `Graph::reset()` is invoked. The node should not call this itself.
+    /// - Nodes with internal state (e.g., counters, buffers) **MUST** implement this method
+    ///   to ensure correct behavior when the graph is re-executed.
     fn reset(&mut self) {}
 }
 

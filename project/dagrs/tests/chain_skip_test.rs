@@ -104,7 +104,7 @@ fn test_chain_skip_deadlock() {
     rt.block_on(async {
         // Set timeout to detect deadlock
         let result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), graph.async_start()).await;
+            tokio::time::timeout(std::time::Duration::from_secs(1), graph.async_start()).await;
 
         match result {
             Ok(Ok(_)) => println!("Graph finished successfully"),

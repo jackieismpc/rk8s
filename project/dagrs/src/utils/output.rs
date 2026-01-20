@@ -27,24 +27,57 @@ use crate::connection::information_packet::Content;
 use std::any::Any;
 use std::sync::Arc;
 
-/// Instruction for loop control
+/// Instruction for loop control.
+///
+/// This struct defines where the execution flow should jump to when a loop repeats.
 #[derive(Debug, Clone)]
 pub struct LoopInstruction {
+    /// The index of the execution block to jump to.
+    ///
+    /// The graph is partitioned into blocks (groups of nodes) based on control flow boundaries.
+    /// If this is set, the executor will set the program counter (PC) to this index.
+    ///
+    /// **Priority**: If both `jump_to_block_index` and `jump_to_node` are set, `jump_to_block_index` takes precedence.
     pub jump_to_block_index: Option<usize>,
+
+    /// The ID of the specific node to jump to.
+    ///
+    /// If set, the executor will look up the block index containing this node and jump there.
+    /// This is the preferred way to specify a jump target as it is robust against graph structural changes.
     pub jump_to_node: Option<usize>,
+
+    /// Optional context data to carry over to the next iteration.
+    ///
+    /// This can be used to pass state or counters between iterations, although using a stateful
+    /// `LoopCondition` is often simpler.
     pub context: Option<Arc<dyn Any + Send + Sync>>,
 }
 
-/// Control flow instructions for node execution
+/// Control flow instructions for node execution.
+///
+/// Nodes can return these instructions via `Output::Flow` to influence the graph's execution path.
 #[derive(Debug, Clone)]
 pub enum FlowControl {
-    /// Continue execution normally
+    /// Continue execution normally.
+    ///
+    /// The graph executor proceeds to the next node(s) in the topological order.
     Continue,
-    /// Loop: request to jump to a specific block index
+
+    /// Loop: request to jump back to a previous point in the graph.
+    ///
+    /// This causes the executor to modify its Program Counter (PC) to restart execution
+    /// from the specified target.
     Loop(LoopInstruction),
-    /// Branch: specify downstream node IDs (as usize) that should be activated
+
+    /// Branch: specify downstream node IDs (as usize) that should be activated.
+    ///
+    /// Used by `RouterNode`. Only the nodes specified in the list will be scheduled for execution.
+    /// All other downstream nodes (and their descendants) connected to this node will be skipped/pruned.
     Branch(Vec<usize>),
-    /// Abort: stop graph execution immediately
+
+    /// Abort: stop graph execution immediately.
+    ///
+    /// This signal halts the entire graph execution. Remaining nodes will not be executed.
     Abort,
 }
 

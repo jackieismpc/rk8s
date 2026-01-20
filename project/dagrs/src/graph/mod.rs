@@ -97,7 +97,8 @@ impl Graph {
     }
 
     /// Reset the graph state but keep the nodes.
-    pub fn reset(&mut self) {
+    /// This method is async because it needs to acquire locks on nodes.
+    pub async fn reset(&mut self) {
         self.execute_states = HashMap::new();
         self.env = Arc::new(EnvVar::new(NodeTable::default()));
         self.is_active = Arc::new(AtomicBool::new(true));
@@ -106,7 +107,7 @@ impl Graph {
         // Re-create channels for all edges to support graph reuse
         // 1. Clear existing channels
         for node in self.nodes.values() {
-            let mut node = node.blocking_lock();
+            let mut node = node.lock().await;
             node.input_channels().0.clear();
             node.output_channels().0.clear();
         }
@@ -121,7 +122,7 @@ impl Graph {
             // Setup OutChannels for 'from_id'
             {
                 if let Some(node_lock) = self.nodes.get(&from_id) {
-                    let mut node = node_lock.blocking_lock();
+                    let mut node = node_lock.lock().await;
                     let out_channels = node.output_channels();
 
                     for to_id in &to_ids {
@@ -135,7 +136,7 @@ impl Graph {
             // Setup InChannels for 'to_ids'
             for (to_id, rx) in rx_map {
                 if let Some(node_lock) = self.nodes.get(&to_id) {
-                    let mut node = node_lock.blocking_lock();
+                    let mut node = node_lock.lock().await;
                     node.input_channels()
                         .insert(from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
                 }
@@ -148,7 +149,7 @@ impl Graph {
         if let Some(hooks) = Arc::get_mut(&mut self.hooks) {
             hooks.push(hook);
         } else {
-            error!("Cannot add hook while graph is running");
+            error!("Cannot add hook: Graph is shared or running (Arc has multiple owners)");
         }
     }
 
@@ -325,6 +326,14 @@ impl Graph {
             }
         }
 
+        // Build parents map for pruning logic
+        let mut parents_map: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for (parent, children) in &self.abstract_graph.edges {
+            for child in children {
+                parents_map.entry(*child).or_default().push(*parent);
+            }
+        }
+
         // Start the nodes by blocks
         while pc < self.blocks.len() {
             let block = &self.blocks[pc];
@@ -342,8 +351,11 @@ impl Graph {
 
             // Handle skipped nodes
             for node_id in skipped_block_nodes {
-                let node = self.nodes.get(&node_id).unwrap();
-                let mut node = node.lock().await;
+                let node = self
+                    .nodes
+                    .get(&node_id)
+                    .ok_or(GraphError::NodeIdError(node_id.0))?;
+                let mut node: tokio::sync::MutexGuard<dyn Node> = node.lock().await;
                 node.output_channels().close_all();
                 let _ = self
                     .event_sender
@@ -358,8 +370,15 @@ impl Graph {
 
             let mut tasks = vec![];
             for node_id in active_block_nodes {
-                let node = self.nodes.get(&node_id).unwrap();
-                let execute_state = self.execute_states[&node_id].clone();
+                let node = self
+                    .nodes
+                    .get(&node_id)
+                    .ok_or(GraphError::NodeIdError(node_id.0))?;
+                let execute_state = self
+                    .execute_states
+                    .get(&node_id)
+                    .ok_or(GraphError::NodeIdError(node_id.0))?
+                    .clone();
                 let env = Arc::clone(&self.env);
                 let node = Arc::clone(node);
                 let condition_flag = condition_flag.clone();
@@ -370,9 +389,9 @@ impl Graph {
                 let task = task::spawn({
                     let errors = Arc::clone(&errors);
                     async move {
-                        let node_ref = node.clone();
-                        let mut node = node.lock().await;
-                        let node_name = node.name();
+                        let node_ref: Arc<Mutex<dyn Node>> = node.clone();
+                        let mut node: tokio::sync::MutexGuard<dyn Node> = node.lock().await;
+                        let node_name = node.name().to_string();
                         let node_id = node.id();
                         let id_val = node_id.0;
 
@@ -406,24 +425,30 @@ impl Graph {
                                 }
 
                                 if out.is_err() {
-                                    let error = out.get_err().unwrap_or("".to_string());
+                                    let error_msg = out.get_err().unwrap_or("".to_string());
                                     error!(
                                         "Execution failed [name: {}, id: {}] - {}",
-                                        node_name, id_val, error
+                                        node_name, id_val, error_msg
                                     );
                                     let _ = event_sender.send(GraphEvent::NodeFailed {
                                         id: node_id,
-                                        error: error.clone(),
+                                        error: error_msg.clone(),
                                     });
+
+                                    // Hook: on_error
+                                    let err_obj = GraphError::ExecutionFailed {
+                                        node_name: node_name.clone(),
+                                        node_id: id_val,
+                                        error: error_msg.clone(),
+                                    };
+                                    for hook in hooks.iter() {
+                                        hook.on_error(&err_obj, &env).await;
+                                    }
 
                                     execute_state.set_output(out.clone());
                                     execute_state.exe_fail();
                                     let mut errors_lock = errors.lock().await;
-                                    errors_lock.push(GraphError::ExecutionFailed {
-                                        node_name,
-                                        node_id: id_val,
-                                        error,
-                                    });
+                                    errors_lock.push(err_obj);
                                 } else {
                                     if let Some(false) = out.conditional_result() {
                                         let mut cf = condition_flag.lock().await;
@@ -451,7 +476,8 @@ impl Graph {
                                 (node_id, out)
                             }
                             Err(_) => {
-                                let mut node_guard = node_ref.lock().await;
+                                let mut node_guard: tokio::sync::MutexGuard<dyn Node> =
+                                    node_ref.lock().await;
                                 node_guard.input_channels().close_all();
                                 node_guard.output_channels().close_all();
 
@@ -461,11 +487,20 @@ impl Graph {
                                     error: "Panic".to_string(),
                                 });
 
-                                let mut errors_lock = errors.lock().await;
-                                errors_lock.push(GraphError::PanicOccurred {
-                                    node_name,
+                                execute_state.set_output(Output::Err("Panic".to_string()));
+                                execute_state.exe_fail();
+
+                                let err_obj = GraphError::PanicOccurred {
+                                    node_name: node_name.clone(),
                                     node_id: id_val,
-                                });
+                                };
+                                // Hook: on_error
+                                for hook in hooks.iter() {
+                                    hook.on_error(&err_obj, &env).await;
+                                }
+
+                                let mut errors_lock = errors.lock().await;
+                                errors_lock.push(err_obj);
                                 (node_id, Output::Err("Panic".to_string()))
                             }
                         }
@@ -474,7 +509,8 @@ impl Graph {
                 tasks.push(task);
             }
 
-            let results = futures::future::join_all(tasks).await;
+            let results: Vec<Result<(NodeId, Output), tokio::task::JoinError>> =
+                futures::future::join_all(tasks).await;
 
             if !(*condition_flag.lock().await) {
                 break;
@@ -483,48 +519,14 @@ impl Graph {
             let mut next_pc = pc + 1;
 
             for (node_id, output) in results.into_iter().flatten() {
-                if let Some(instr) = output.get_flow().and_then(|f| {
-                    if let FlowControl::Loop(i) = f {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                }) {
-                    if let Some(idx) = instr.jump_to_block_index {
-                        next_pc = idx;
-                    } else if let Some(nid) = instr.jump_to_node
-                        && let Some(&idx) = node_block_map.get(&NodeId(nid))
-                    {
-                        next_pc = idx;
-                    }
-                } else if let Some(ids) = output.get_flow().and_then(|f| {
-                    if let FlowControl::Branch(i) = f {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                }) {
-                    let allowed: HashSet<usize> = ids.iter().cloned().collect();
-                    if let Some(children) = self.abstract_graph.edges.get(&node_id) {
-                        for child in children {
-                            if !allowed.contains(&child.0) {
-                                active_nodes.remove(child);
-                            }
-                        }
-                    }
-                } else if output
-                    .get_flow()
-                    .and_then(|f| {
-                        if let FlowControl::Abort = f {
-                            Some(())
-                        } else {
-                            None
-                        }
-                    })
-                    .is_some()
-                {
-                    return Ok(());
-                }
+                self.handle_flow_control(
+                    output,
+                    node_id,
+                    &mut active_nodes,
+                    &node_block_map,
+                    &parents_map,
+                    &mut next_pc,
+                )?;
             }
 
             pc = next_pc;
@@ -542,6 +544,88 @@ impl Graph {
             }
         }
 
+        Ok(())
+    }
+
+    fn handle_flow_control(
+        &self,
+        output: Output,
+        node_id: NodeId,
+        active_nodes: &mut HashSet<NodeId>,
+        node_block_map: &HashMap<NodeId, usize>,
+        parents_map: &HashMap<NodeId, Vec<NodeId>>,
+        next_pc: &mut usize,
+    ) -> Result<(), GraphError> {
+        if let Some(flow) = output.get_flow() {
+            match flow {
+                FlowControl::Loop(instr) => {
+                    if let Some(idx) = instr.jump_to_block_index {
+                        *next_pc = idx;
+                    } else if let Some(nid) = instr.jump_to_node {
+                        if let Some(&idx) = node_block_map.get(&NodeId(nid)) {
+                            *next_pc = idx;
+                        } else {
+                            error!("Invalid jump target: node {} not found in block map", nid);
+                            return Err(GraphError::ExecutionFailed {
+                                node_name: format!("Node-{}", node_id.0),
+                                node_id: node_id.0,
+                                error: format!("Invalid jump target: node {} not found", nid),
+                            });
+                        }
+                    }
+                }
+                FlowControl::Branch(ids) => {
+                    let allowed: HashSet<usize> = ids.iter().cloned().collect();
+                    if let Some(children) = self.abstract_graph.edges.get(&node_id) {
+                        let mut to_prune = Vec::new();
+                        let empty_vec = Vec::new();
+
+                        // 1. Identify immediate children to prune
+                        for child in children {
+                            if !allowed.contains(&child.0) {
+                                // Check if child has ANY active parent *excluding* current node_id
+                                let parents = parents_map.get(child).unwrap_or(&empty_vec);
+                                let has_other_active_parent = parents
+                                    .iter()
+                                    .any(|p| *p != node_id && active_nodes.contains(p));
+
+                                if !has_other_active_parent && active_nodes.remove(child) {
+                                    // Child is pruned. Now check its children.
+                                    if let Some(descendants) = self.abstract_graph.edges.get(child)
+                                    {
+                                        for desc in descendants {
+                                            to_prune.push(*desc);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Recursively prune descendants
+                        while let Some(pruned_id) = to_prune.pop() {
+                            // Only prune if NO active parents remain
+                            let parents = parents_map.get(&pruned_id).unwrap_or(&empty_vec);
+                            let has_active_parent =
+                                parents.iter().any(|p| active_nodes.contains(p));
+
+                            if !has_active_parent && active_nodes.remove(&pruned_id) {
+                                // If the node was active and is now pruned, schedule its children for check
+                                if let Some(descendants) = self.abstract_graph.edges.get(&pruned_id)
+                                {
+                                    for desc in descendants {
+                                        to_prune.push(*desc);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                FlowControl::Abort => {
+                    return Ok(());
+                }
+                FlowControl::Continue => {}
+            }
+        }
         Ok(())
     }
 

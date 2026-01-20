@@ -2,6 +2,7 @@
 pub enum GraphError {
     GraphLoopDetected,
     GraphNotActive,
+    NodeIdError(usize),
     ExecutionFailed {
         node_name: String,
         node_id: usize,
@@ -21,3 +22,5 @@ impl std::fmt::Display for GraphError {
         write!(f, "{:?}", self)
     }
 }
+
+impl std::error::Error for GraphError {}

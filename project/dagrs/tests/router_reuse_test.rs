@@ -115,7 +115,9 @@ fn test_router_reuse() {
     assert!(!*exec_c.lock().unwrap());
 
     // Reset
-    graph.reset();
+    rt.block_on(async {
+        graph.reset().await;
+    });
     *exec_a.lock().unwrap() = false;
     *exec_b.lock().unwrap() = false;
     *exec_c.lock().unwrap() = false;

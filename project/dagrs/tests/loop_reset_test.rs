@@ -52,7 +52,18 @@ fn test_loop_reset() {
 
     // A -> Loop
     graph.add_edge(id_a, vec![id_loop]);
-    // Do NOT add Loop -> A edge. The jump is dynamic.
+
+    // Documentation: Dynamic Jump Mechanism
+    // We do NOT add a static edge from Loop -> A (e.g., graph.add_edge(id_loop, vec![id_a])).
+    //
+    // Reason 1 (Cycle Avoidance): Adding a static edge would create a cycle (A -> Loop -> A) in the
+    // dependency graph, causing the topological sort to fail with a cycle detection error.
+    //
+    // Reason 2 (Runtime Control Flow): The "jump" is handled dynamically at runtime.
+    // The LoopNode returns a `FlowControl::Loop` instruction containing the target node ID.
+    // The Graph executor interprets this instruction, looks up the block index of the target node,
+    // and modifies the Program Counter (pc) to jump backwards to that block.
+    // This allows for cyclic execution flows on top of an acyclic static graph structure.
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -78,7 +89,9 @@ fn test_loop_reset() {
     assert!(first_run_count > 0);
 
     // Reset
-    graph.reset();
+    rt.block_on(async {
+        graph.reset().await;
+    });
     *counter.lock().unwrap() = 0;
 
     println!("Second Run");
