@@ -24,6 +24,47 @@
 //! let err_out = Output::Err("some error messages!".to_string());
 
 use crate::connection::information_packet::Content;
+use std::any::Any;
+use std::sync::Arc;
+
+/// Instruction for loop control
+#[derive(Debug, Clone)]
+pub struct LoopInstruction {
+    pub jump_to_block_index: Option<usize>,
+    pub jump_to_node: Option<usize>,
+    pub context: Option<Arc<dyn Any + Send + Sync>>,
+}
+
+/// Control flow instructions for node execution
+#[derive(Debug, Clone)]
+pub enum FlowControl {
+    /// Continue execution normally
+    Continue,
+    /// Loop: request to jump to a specific block index
+    Loop(LoopInstruction),
+    /// Branch: specify downstream node IDs (as usize) that should be activated
+    Branch(Vec<usize>),
+    /// Abort: stop graph execution immediately
+    Abort,
+}
+
+impl FlowControl {
+    pub fn loop_to_block(index: usize) -> Self {
+        Self::Loop(LoopInstruction {
+            jump_to_block_index: Some(index),
+            jump_to_node: None,
+            context: None,
+        })
+    }
+
+    pub fn loop_to_node(node_id: usize) -> Self {
+        Self::Loop(LoopInstruction {
+            jump_to_block_index: None,
+            jump_to_node: Some(node_id),
+            context: None,
+        })
+    }
+}
 
 /// [`Output`] represents the output of a node. Different from information packet (`Content`,
 /// used to communicate with other Nodes), `Output` carries the information that `Node`
@@ -35,6 +76,8 @@ pub enum Output {
     ErrWithExitCode(Option<i32>, Option<Content>),
     /// ...
     ConditionResult(bool),
+    /// Control flow signal
+    Flow(FlowControl),
 }
 
 impl Output {
@@ -65,7 +108,7 @@ impl Output {
     pub(crate) fn is_err(&self) -> bool {
         match self {
             Self::Err(_) | Self::ErrWithExitCode(_, _) => true,
-            Self::Out(_) | Self::ConditionResult(_) => false,
+            Self::Out(_) | Self::ConditionResult(_) | Self::Flow(_) => false,
         }
     }
 
@@ -73,14 +116,17 @@ impl Output {
     pub fn get_out(&self) -> Option<Content> {
         match self {
             Self::Out(out) => out.clone(),
-            Self::Err(_) | Self::ErrWithExitCode(_, _) | Self::ConditionResult(_) => None,
+            Self::Err(_)
+            | Self::ErrWithExitCode(_, _)
+            | Self::ConditionResult(_)
+            | Self::Flow(_) => None,
         }
     }
 
     /// Get error information stored in [`Output`].
     pub fn get_err(&self) -> Option<String> {
         match self {
-            Self::Out(_) | Self::ConditionResult(_) => None,
+            Self::Out(_) | Self::ConditionResult(_) | Self::Flow(_) => None,
             Self::Err(err) => Some(err.to_string()),
             Self::ErrWithExitCode(code, _) => {
                 let error_code = code.map_or("".to_string(), |v| v.to_string());
@@ -96,6 +142,14 @@ impl Output {
     pub(crate) fn conditional_result(&self) -> Option<bool> {
         match self {
             Self::ConditionResult(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Get the flow control instruction stored in [`Output`].
+    pub fn get_flow(&self) -> Option<&FlowControl> {
+        match self {
+            Self::Flow(flow) => Some(flow),
             _ => None,
         }
     }

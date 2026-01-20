@@ -2,8 +2,17 @@ pub mod action;
 pub mod conditional_node;
 pub mod default_node;
 pub mod id_allocate;
+pub mod loop_node;
+pub mod router_node;
 
 pub mod typed_action;
+
+pub use action::{Action, EmptyAction};
+pub use conditional_node::ConditionalNode;
+pub use default_node::DefaultNode;
+pub use loop_node::LoopNode;
+pub use router_node::RouterNode;
+
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
@@ -62,6 +71,10 @@ pub trait Node: Send + Sync {
     fn has_typed_output(&self) -> bool {
         false
     }
+
+    /// Reset the node state to its initial state.
+    /// This is called before the graph starts running or when the graph is reset.
+    fn reset(&mut self) {}
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, Ord, PartialOrd)]

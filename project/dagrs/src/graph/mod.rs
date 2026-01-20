@@ -1,6 +1,8 @@
 mod abstract_graph;
 pub mod error;
+pub mod event;
 pub mod loop_subgraph;
+
 use std::hash::Hash;
 use std::sync::atomic::Ordering;
 use std::{
@@ -12,13 +14,16 @@ use std::{
 use crate::{
     Output,
     connection::{in_channel::InChannel, information_packet::Content, out_channel::OutChannel},
+    graph::event::GraphEvent,
     node::{Node, NodeId, NodeTable},
+    utils::hook::ExecutionHook,
+    utils::output::FlowControl,
     utils::{env::EnvVar, execstate::ExecState},
 };
 
 use log::{debug, error, info};
 use tokio::sync::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task;
 
 use abstract_graph::AbstractGraph;
@@ -61,6 +66,10 @@ pub struct Graph {
     pub(crate) blocks: Vec<HashSet<NodeId>>,
     /// Abstract representation of the graph structure, used for cycle detection
     pub(crate) abstract_graph: AbstractGraph,
+    /// Registered execution hooks
+    pub(crate) hooks: Arc<Vec<Box<dyn ExecutionHook>>>,
+    /// Event broadcaster
+    pub(crate) event_sender: broadcast::Sender<GraphEvent>,
 }
 
 impl Default for Graph {
@@ -72,6 +81,7 @@ impl Default for Graph {
 impl Graph {
     /// Constructs a new `Graph`
     pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(100);
         Graph {
             nodes: HashMap::new(),
             node_count: 0,
@@ -81,6 +91,8 @@ impl Graph {
             in_degree: HashMap::new(),
             blocks: vec![],
             abstract_graph: AbstractGraph::new(),
+            hooks: Arc::new(Vec::new()),
+            event_sender: tx,
         }
     }
 
@@ -90,6 +102,59 @@ impl Graph {
         self.env = Arc::new(EnvVar::new(NodeTable::default()));
         self.is_active = Arc::new(AtomicBool::new(true));
         self.blocks.clear();
+
+        // Re-create channels for all edges to support graph reuse
+        // 1. Clear existing channels
+        for node in self.nodes.values() {
+            let mut node = node.blocking_lock();
+            node.input_channels().0.clear();
+            node.output_channels().0.clear();
+        }
+
+        // 2. Re-establish connections based on abstract_graph
+        // Clone edges to avoid borrowing conflict
+        let edges = self.abstract_graph.edges.clone();
+
+        for (from_id, to_ids) in edges {
+            let mut rx_map: HashMap<NodeId, mpsc::Receiver<Content>> = HashMap::new();
+
+            // Setup OutChannels for 'from_id'
+            {
+                if let Some(node_lock) = self.nodes.get(&from_id) {
+                    let mut node = node_lock.blocking_lock();
+                    let out_channels = node.output_channels();
+
+                    for to_id in &to_ids {
+                        let (tx, rx) = mpsc::channel::<Content>(32);
+                        out_channels.insert(*to_id, Arc::new(Mutex::new(OutChannel::Mpsc(tx))));
+                        rx_map.insert(*to_id, rx);
+                    }
+                }
+            }
+
+            // Setup InChannels for 'to_ids'
+            for (to_id, rx) in rx_map {
+                if let Some(node_lock) = self.nodes.get(&to_id) {
+                    let mut node = node_lock.blocking_lock();
+                    node.input_channels()
+                        .insert(from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
+                }
+            }
+        }
+    }
+
+    /// Register a new execution hook
+    pub fn add_hook(&mut self, hook: Box<dyn ExecutionHook>) {
+        if let Some(hooks) = Arc::get_mut(&mut self.hooks) {
+            hooks.push(hook);
+        } else {
+            error!("Cannot add hook while graph is running");
+        }
+    }
+
+    /// Subscribe to graph events
+    pub fn subscribe(&self) -> broadcast::Receiver<GraphEvent> {
+        self.event_sender.subscribe()
     }
 
     /// Adds a new node to the `Graph`
@@ -240,101 +305,230 @@ impl Graph {
     ///   - Returns single error if only one failure occurs
     ///   - Returns `MultipleErrors` if multiple nodes fail
     async fn run(&mut self) -> Result<(), GraphError> {
-        // let mut tasks = Vec::new();
-        let mut chunks = vec![];
         let condition_flag = Arc::new(Mutex::new(true));
         let errors = Arc::new(Mutex::new(Vec::new()));
 
+        // Reset all nodes
+        for node in self.nodes.values() {
+            let mut node = node.lock().await;
+            node.reset();
+        }
+
+        let mut pc = 0;
+        let mut active_nodes: HashSet<NodeId> = self.nodes.keys().cloned().collect();
+
+        // Build NodeId -> BlockIndex map
+        let mut node_block_map = HashMap::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            for node in block {
+                node_block_map.insert(*node, i);
+            }
+        }
+
         // Start the nodes by blocks
-        for block in &self.blocks {
-            let mut chunk = vec![];
-            for node_id in block {
-                let node = self.nodes.get(node_id).unwrap();
-                let execute_state = self.execute_states[node_id].clone();
-                let node_clone = Arc::clone(&self.env);
+        while pc < self.blocks.len() {
+            let block = &self.blocks[pc];
+
+            let mut active_block_nodes = Vec::new();
+            let mut skipped_block_nodes = Vec::new();
+
+            for id in block {
+                if active_nodes.contains(id) {
+                    active_block_nodes.push(*id);
+                } else {
+                    skipped_block_nodes.push(*id);
+                }
+            }
+
+            // Handle skipped nodes
+            for node_id in skipped_block_nodes {
+                let node = self.nodes.get(&node_id).unwrap();
+                let mut node = node.lock().await;
+                node.output_channels().close_all();
+                let _ = self
+                    .event_sender
+                    .send(GraphEvent::NodeSkipped { id: node_id });
+                debug!("Skipped node [id: {}], output channels closed", node_id.0);
+            }
+
+            if active_block_nodes.is_empty() {
+                pc += 1;
+                continue;
+            }
+
+            let mut tasks = vec![];
+            for node_id in active_block_nodes {
+                let node = self.nodes.get(&node_id).unwrap();
+                let execute_state = self.execute_states[&node_id].clone();
+                let env = Arc::clone(&self.env);
                 let node = Arc::clone(node);
                 let condition_flag = condition_flag.clone();
+                let errors = errors.clone();
+                let hooks = self.hooks.clone();
+                let event_sender = self.event_sender.clone();
 
                 let task = task::spawn({
                     let errors = Arc::clone(&errors);
                     async move {
-                        // create an Arc pointer to node, used for error handling.
                         let node_ref = node.clone();
-                        // Lock the node before running its method
                         let mut node = node.lock().await;
                         let node_name = node.name();
-                        let node_id = node.id().0;
+                        let node_id = node.id();
+                        let id_val = node_id.0;
+
+                        // Hook: before_node_run
+                        for hook in hooks.iter() {
+                            hook.before_node_run(&*node, &env).await;
+                        }
+                        // Event: NodeStart
+                        let _ = event_sender.send(GraphEvent::NodeStart {
+                            id: node_id,
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        });
+
+                        let env_for_run = env.clone();
                         let result = panic::catch_unwind(AssertUnwindSafe(|| async move {
-                            node.run(node_clone).await
+                            node.run(env_for_run).await
                         }));
 
                         match result {
                             Ok(out) => {
                                 let out = out.await;
+                                // Node lock is released here. Re-acquire for hooks.
+                                let mut node = node_ref.lock().await;
+
+                                // Hook: after_node_run
+                                for hook in hooks.iter() {
+                                    hook.after_node_run(&*node, &out, &env).await;
+                                }
+
                                 if out.is_err() {
                                     let error = out.get_err().unwrap_or("".to_string());
                                     error!(
                                         "Execution failed [name: {}, id: {}] - {}",
-                                        node_name, node_id, error
+                                        node_name, id_val, error
                                     );
-                                    execute_state.set_output(out);
+                                    let _ = event_sender.send(GraphEvent::NodeFailed {
+                                        id: node_id,
+                                        error: error.clone(),
+                                    });
+
+                                    execute_state.set_output(out.clone());
                                     execute_state.exe_fail();
                                     let mut errors_lock = errors.lock().await;
                                     errors_lock.push(GraphError::ExecutionFailed {
                                         node_name,
-                                        node_id,
+                                        node_id: id_val,
                                         error,
                                     });
                                 } else {
-                                    // If the ouput is produced by a ConditionalNode, check the value:
-                                    // - true: go on execution
-                                    // - false: set conditional_exec
                                     if let Some(false) = out.conditional_result() {
                                         let mut cf = condition_flag.lock().await;
                                         *cf = false;
                                         info!(
                                             "Condition failed on [name: {}, id: {}]. The rest nodes will abort.",
-                                            node_name, node_id,
+                                            node_name, id_val,
                                         )
                                     }
+                                    let _ =
+                                        event_sender.send(GraphEvent::NodeSuccess { id: node_id });
 
-                                    // Save the execution state.
-                                    execute_state.set_output(out);
+                                    execute_state.set_output(out.clone());
                                     execute_state.exe_success();
                                     debug!(
                                         "Execution succeed [name: {}, id: {}]",
-                                        node_name, node_id,
+                                        node_name, id_val,
                                     );
                                 }
+
+                                // Always close output channels after successful execution
+                                // This ensures downstream nodes don't hang if this node didn't send any data
+                                node.output_channels().close_all();
+
+                                (node_id, out)
                             }
                             Err(_) => {
-                                // Close all the channels using the async lock (do not use blocking_lock inside runtime)
                                 let mut node_guard = node_ref.lock().await;
                                 node_guard.input_channels().close_all();
                                 node_guard.output_channels().close_all();
 
-                                error!("Execution failed [name: {}, id: {}]", node_name, node_id,);
+                                error!("Execution failed [name: {}, id: {}]", node_name, id_val,);
+                                let _ = event_sender.send(GraphEvent::NodeFailed {
+                                    id: node_id,
+                                    error: "Panic".to_string(),
+                                });
+
                                 let mut errors_lock = errors.lock().await;
-                                errors_lock.push(GraphError::PanicOccurred { node_name, node_id });
+                                errors_lock.push(GraphError::PanicOccurred {
+                                    node_name,
+                                    node_id: id_val,
+                                });
+                                (node_id, Output::Err("Panic".to_string()))
                             }
                         }
                     }
                 });
-                chunk.push(task);
+                tasks.push(task);
             }
-            chunks.push(chunk);
-        }
 
-        // Await all chunks to complete.
-        for chunk in chunks {
-            // If condition flag is false, abort the rest chuncks.
+            let results = futures::future::join_all(tasks).await;
+
             if !(*condition_flag.lock().await) {
-                chunk.iter().for_each(|handle| handle.abort());
-            } else {
-                let _ = futures::future::join_all(chunk).await;
+                break;
             }
+
+            let mut next_pc = pc + 1;
+
+            for (node_id, output) in results.into_iter().flatten() {
+                if let Some(instr) = output.get_flow().and_then(|f| {
+                    if let FlowControl::Loop(i) = f {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                }) {
+                    if let Some(idx) = instr.jump_to_block_index {
+                        next_pc = idx;
+                    } else if let Some(nid) = instr.jump_to_node
+                        && let Some(&idx) = node_block_map.get(&NodeId(nid))
+                    {
+                        next_pc = idx;
+                    }
+                } else if let Some(ids) = output.get_flow().and_then(|f| {
+                    if let FlowControl::Branch(i) = f {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                }) {
+                    let allowed: HashSet<usize> = ids.iter().cloned().collect();
+                    if let Some(children) = self.abstract_graph.edges.get(&node_id) {
+                        for child in children {
+                            if !allowed.contains(&child.0) {
+                                active_nodes.remove(child);
+                            }
+                        }
+                    }
+                } else if output
+                    .get_flow()
+                    .and_then(|f| {
+                        if let FlowControl::Abort = f {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    })
+                    .is_some()
+                {
+                    return Ok(());
+                }
+            }
+
+            pc = next_pc;
         }
-        // let _ = futures::future::join_all(tasks).await;
 
         self.is_active
             .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -356,14 +550,17 @@ impl Graph {
     ///
     /// Returns true if the graph contains a cycle, false otherwise.
     pub async fn check_loop_and_partition(&mut self) -> bool {
-        // Check for cycles using abstract graph
-        let has_cycle = self.abstract_graph.check_loop();
+        // Check for cycles and get topological sort
+        let sorted_nodes = match self.abstract_graph.get_topological_sort() {
+            Some(nodes) => nodes,
+            None => return true,
+        };
 
         // Split into blocks based on conditional nodes
         let mut current_block = HashSet::new();
 
-        for node_id in self.abstract_graph.in_degree.keys() {
-            if let Some(unfolded_nodes) = self.abstract_graph.unfold_node(*node_id) {
+        for node_id in sorted_nodes {
+            if let Some(unfolded_nodes) = self.abstract_graph.unfold_node(node_id) {
                 // Create new block for unfolded nodes
                 if !current_block.is_empty() {
                     self.blocks.push(current_block);
@@ -376,10 +573,10 @@ impl Graph {
                 self.blocks.push(current_block);
                 current_block = HashSet::new();
             } else {
-                current_block.insert(*node_id);
+                current_block.insert(node_id);
 
                 // Create new block if conditional node / loop encountered
-                let node = self.nodes.get(node_id).unwrap();
+                let node = self.nodes.get(&node_id).unwrap();
                 // Use an async lock here to avoid blocking the runtime
                 let node_guard = node.lock().await;
                 if node_guard.is_condition() {
@@ -396,7 +593,7 @@ impl Graph {
 
         debug!("Split the graph into blocks: {:?}", self.blocks);
 
-        has_cycle
+        false
     }
 
     /// Get the output of all tasks.
