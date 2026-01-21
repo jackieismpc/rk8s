@@ -123,6 +123,7 @@ impl Graph {
             let mut node = node.lock().await;
             node.input_channels().0.clear();
             node.output_channels().0.clear();
+            node.reset();
         }
 
         // 2. Re-establish connections based on abstract_graph
@@ -422,8 +423,10 @@ impl Graph {
                         match result {
                             Ok(out) => {
                                 let out = out.await;
-                                // Node lock is released here. Re-acquire for hooks.
-                                let mut node = node_ref.lock().await;
+                                // The original node lock guard acquired above was moved into
+                                // `node.run(...)` and dropped when that future completed.
+                                // Re-acquire the lock here so we can run hooks and perform cleanup.
+                                let node = node_ref.lock().await;
 
                                 // Hook: after_node_run
                                 {
@@ -578,15 +581,7 @@ impl Graph {
         self.is_active
             .store(false, std::sync::atomic::Ordering::Relaxed);
 
-        let errors = errors.lock().await;
-        if !errors.is_empty() {
-            if errors.len() == 1 {
-                return Err(errors[0].clone());
-            } else {
-                return Err(GraphError::MultipleErrors(errors.clone()));
-            }
-        }
-
+        let _ = self.event_sender.send(GraphEvent::GraphFinished);
         Ok(())
     }
 

@@ -151,14 +151,18 @@ fn test_hook() {
     let mut table = NodeTable::new();
 
     let calls = Arc::new(Mutex::new(0));
-    graph.add_hook(Box::new(TestHook {
-        call_count: calls.clone(),
-    }));
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        graph
+            .add_hook(Box::new(TestHook {
+                call_count: calls.clone(),
+            }))
+            .await;
+    });
 
     let node = DefaultNode::new("A".to_string(), &mut table);
     graph.add_node(node);
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         graph.async_start().await.unwrap();
     });

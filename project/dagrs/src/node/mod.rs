@@ -10,8 +10,8 @@ pub mod typed_action;
 pub use action::{Action, EmptyAction};
 pub use conditional_node::ConditionalNode;
 pub use default_node::DefaultNode;
-pub use loop_node::LoopNode;
-pub use router_node::RouterNode;
+pub use loop_node::{LoopCondition, LoopNode};
+pub use router_node::{Router, RouterNode};
 
 use std::{collections::HashMap, sync::Arc};
 

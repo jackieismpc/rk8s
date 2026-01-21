@@ -86,7 +86,10 @@ fn test_loop_reset() {
     // Assuming it works as intended in first run.
     let first_run_count = *counter.lock().unwrap();
     println!("First run count: {}", first_run_count);
-    assert!(first_run_count > 0);
+    assert_eq!(
+        first_run_count, 4,
+        "Counter should be 4 (1 initial + 3 loops)"
+    );
 
     // Reset
     rt.block_on(async {
