@@ -9,6 +9,10 @@ use std::sync::{Arc, Mutex};
 /// This trait allows users to define custom logic for controlling loop execution.
 /// The condition is evaluated *after* the execution of the nodes within the loop body.
 ///
+/// # Evaluation Semantics
+/// - **Post-check**: The loop body executes at least once before `should_continue` is called.
+/// - **Frequency**: Called once per iteration, after all nodes in the loop body have finished.
+///
 /// # Example
 ///
 /// ```rust

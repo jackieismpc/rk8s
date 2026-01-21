@@ -23,7 +23,7 @@ use crate::{
 
 use log::{debug, error, info};
 use tokio::sync::Mutex;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task;
 
 use abstract_graph::AbstractGraph;
@@ -64,12 +64,17 @@ pub struct Graph {
     /// Stores the blocks of nodes divided by conditional nodes.
     /// Each block is a HashSet of NodeIds that represents a group of nodes that will be executed together.
     pub(crate) blocks: Vec<HashSet<NodeId>>,
+    /// Maps NodeId to the index of the block it belongs to.
+    /// This is built during `check_loop_and_partition` and used during execution.
+    pub(crate) node_block_map: HashMap<NodeId, usize>,
     /// Abstract representation of the graph structure, used for cycle detection
     pub(crate) abstract_graph: AbstractGraph,
     /// Registered execution hooks
-    pub(crate) hooks: Arc<Vec<Box<dyn ExecutionHook>>>,
+    pub(crate) hooks: Arc<RwLock<Vec<Box<dyn ExecutionHook>>>>,
     /// Event broadcaster
     pub(crate) event_sender: broadcast::Sender<GraphEvent>,
+    /// Maximum number of loop iterations allowed to prevent infinite loops.
+    pub(crate) max_loop_count: usize,
 }
 
 impl Default for Graph {
@@ -90,10 +95,17 @@ impl Graph {
             is_active: Arc::new(AtomicBool::new(true)),
             in_degree: HashMap::new(),
             blocks: vec![],
+            node_block_map: HashMap::new(),
             abstract_graph: AbstractGraph::new(),
-            hooks: Arc::new(Vec::new()),
+            hooks: Arc::new(RwLock::new(Vec::new())),
             event_sender: tx,
+            max_loop_count: 1000,
         }
+    }
+
+    /// Set the maximum number of loop iterations.
+    pub fn set_max_loop_count(&mut self, count: usize) {
+        self.max_loop_count = count;
     }
 
     /// Reset the graph state but keep the nodes.
@@ -103,6 +115,7 @@ impl Graph {
         self.env = Arc::new(EnvVar::new(NodeTable::default()));
         self.is_active = Arc::new(AtomicBool::new(true));
         self.blocks.clear();
+        self.node_block_map.clear();
 
         // Re-create channels for all edges to support graph reuse
         // 1. Clear existing channels
@@ -145,12 +158,9 @@ impl Graph {
     }
 
     /// Register a new execution hook
-    pub fn add_hook(&mut self, hook: Box<dyn ExecutionHook>) {
-        if let Some(hooks) = Arc::get_mut(&mut self.hooks) {
-            hooks.push(hook);
-        } else {
-            error!("Cannot add hook: Graph is shared or running (Arc has multiple owners)");
-        }
+    pub async fn add_hook(&mut self, hook: Box<dyn ExecutionHook>) {
+        let mut hooks = self.hooks.write().await;
+        hooks.push(hook);
     }
 
     /// Subscribe to graph events
@@ -316,15 +326,8 @@ impl Graph {
         }
 
         let mut pc = 0;
+        let mut loop_count = 0;
         let mut active_nodes: HashSet<NodeId> = self.nodes.keys().cloned().collect();
-
-        // Build NodeId -> BlockIndex map
-        let mut node_block_map = HashMap::new();
-        for (i, block) in self.blocks.iter().enumerate() {
-            for node in block {
-                node_block_map.insert(*node, i);
-            }
-        }
 
         // Build parents map for pruning logic
         let mut parents_map: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
@@ -336,6 +339,11 @@ impl Graph {
 
         // Start the nodes by blocks
         while pc < self.blocks.len() {
+            if loop_count >= self.max_loop_count {
+                return Err(GraphError::LoopLimitExceeded(self.max_loop_count));
+            }
+            loop_count += 1;
+
             let block = &self.blocks[pc];
 
             let mut active_block_nodes = Vec::new();
@@ -396,8 +404,11 @@ impl Graph {
                         let id_val = node_id.0;
 
                         // Hook: before_node_run
-                        for hook in hooks.iter() {
-                            hook.before_node_run(&*node, &env).await;
+                        {
+                            let hooks_guard = hooks.read().await;
+                            for hook in hooks_guard.iter() {
+                                hook.before_node_run(&*node, &env).await;
+                            }
                         }
                         // Event: NodeStart
                         let _ = event_sender.send(GraphEvent::NodeStart {
@@ -420,8 +431,11 @@ impl Graph {
                                 let mut node = node_ref.lock().await;
 
                                 // Hook: after_node_run
-                                for hook in hooks.iter() {
-                                    hook.after_node_run(&*node, &out, &env).await;
+                                {
+                                    let hooks_guard = hooks.read().await;
+                                    for hook in hooks_guard.iter() {
+                                        hook.after_node_run(&*node, &out, &env).await;
+                                    }
                                 }
 
                                 if out.is_err() {
@@ -441,8 +455,11 @@ impl Graph {
                                         node_id: id_val,
                                         error: error_msg.clone(),
                                     };
-                                    for hook in hooks.iter() {
-                                        hook.on_error(&err_obj, &env).await;
+                                    {
+                                        let hooks_guard = hooks.read().await;
+                                        for hook in hooks_guard.iter() {
+                                            hook.on_error(&err_obj, &env).await;
+                                        }
                                     }
 
                                     execute_state.set_output(out.clone());
@@ -495,8 +512,11 @@ impl Graph {
                                     node_id: id_val,
                                 };
                                 // Hook: on_error
-                                for hook in hooks.iter() {
-                                    hook.on_error(&err_obj, &env).await;
+                                {
+                                    let hooks_guard = hooks.read().await;
+                                    for hook in hooks_guard.iter() {
+                                        hook.on_error(&err_obj, &env).await;
+                                    }
                                 }
 
                                 let mut errors_lock = errors.lock().await;
@@ -512,6 +532,17 @@ impl Graph {
             let results: Vec<Result<(NodeId, Output), tokio::task::JoinError>> =
                 futures::future::join_all(tasks).await;
 
+            // Check for errors immediately
+            let errors_guard = errors.lock().await;
+            if !errors_guard.is_empty() {
+                if errors_guard.len() == 1 {
+                    return Err(errors_guard[0].clone());
+                } else {
+                    return Err(GraphError::MultipleErrors(errors_guard.clone()));
+                }
+            }
+            drop(errors_guard);
+
             if !(*condition_flag.lock().await) {
                 break;
             }
@@ -523,7 +554,7 @@ impl Graph {
                     output,
                     node_id,
                     &mut active_nodes,
-                    &node_block_map,
+                    &self.node_block_map,
                     &parents_map,
                     &mut next_pc,
                 )?;
@@ -642,6 +673,8 @@ impl Graph {
 
         // Split into blocks based on conditional nodes
         let mut current_block = HashSet::new();
+        self.blocks.clear();
+        self.node_block_map.clear();
 
         for node_id in sorted_nodes {
             if let Some(unfolded_nodes) = self.abstract_graph.unfold_node(node_id) {
@@ -673,6 +706,13 @@ impl Graph {
         // Add any remaining nodes to final block
         if !current_block.is_empty() {
             self.blocks.push(current_block);
+        }
+
+        // Build node_block_map
+        for (i, block) in self.blocks.iter().enumerate() {
+            for node_id in block {
+                self.node_block_map.insert(*node_id, i);
+            }
         }
 
         debug!("Split the graph into blocks: {:?}", self.blocks);

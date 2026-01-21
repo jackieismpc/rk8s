@@ -56,28 +56,35 @@ pub struct LoopInstruction {
 /// Control flow instructions for node execution.
 ///
 /// Nodes can return these instructions via `Output::Flow` to influence the graph's execution path.
+/// The execution engine interprets these instructions after a node completes successfully.
 #[derive(Debug, Clone)]
 pub enum FlowControl {
     /// Continue execution normally.
     ///
     /// The graph executor proceeds to the next node(s) in the topological order.
+    /// This is the default behavior if no flow control is specified.
     Continue,
 
     /// Loop: request to jump back to a previous point in the graph.
     ///
     /// This causes the executor to modify its Program Counter (PC) to restart execution
-    /// from the specified target.
+    /// from the specified target. Useful for implementing iterative algorithms.
     Loop(LoopInstruction),
 
     /// Branch: specify downstream node IDs (as usize) that should be activated.
     ///
     /// Used by `RouterNode`. Only the nodes specified in the list will be scheduled for execution.
     /// All other downstream nodes (and their descendants) connected to this node will be skipped/pruned.
+    ///
+    /// # Semantics
+    /// - If the list is empty, no downstream nodes will run.
+    /// - If a downstream node is NOT in this list, it (and its children) are skipped.
     Branch(Vec<usize>),
 
     /// Abort: stop graph execution immediately.
     ///
     /// This signal halts the entire graph execution. Remaining nodes will not be executed.
+    /// The graph returns `Ok(())` as if it finished, but early.
     Abort,
 }
 

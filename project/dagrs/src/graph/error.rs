@@ -15,6 +15,8 @@ pub enum GraphError {
     MultipleErrors(Vec<GraphError>),
     /// Contains the original error message when runtime creation failed
     RuntimeCreationFailed(String),
+    /// Max loop limit exceeded
+    LoopLimitExceeded(usize),
 }
 
 impl std::fmt::Display for GraphError {
