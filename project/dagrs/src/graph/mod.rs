@@ -339,11 +339,6 @@ impl Graph {
 
         // Start the nodes by blocks
         while pc < self.blocks.len() {
-            if loop_count >= self.max_loop_count {
-                return Err(GraphError::LoopLimitExceeded(self.max_loop_count));
-            }
-            loop_count += 1;
-
             let block = &self.blocks[pc];
 
             let mut active_block_nodes = Vec::new();
@@ -486,9 +481,10 @@ impl Graph {
                                     );
                                 }
 
-                                // Always close output channels after successful execution
-                                // This ensures downstream nodes don't hang if this node didn't send any data
-                                node.output_channels().close_all();
+                                // We typically do not close output channels here to allow loop execution
+                                // where the node might run again.
+                                // If the graph needs to signal EOF, it should be done when the graph finishes
+                                // or explicitly by the node logic.
 
                                 (node_id, out)
                             }
@@ -548,16 +544,32 @@ impl Graph {
             }
 
             let mut next_pc = pc + 1;
+            let mut should_abort = false;
 
             for (node_id, output) in results.into_iter().flatten() {
-                self.handle_flow_control(
+                if self.handle_flow_control(
                     output,
                     node_id,
                     &mut active_nodes,
                     &self.node_block_map,
                     &parents_map,
                     &mut next_pc,
-                )?;
+                )? {
+                    should_abort = true;
+                    break;
+                }
+            }
+
+            if should_abort {
+                break;
+            }
+
+            // Check for loop
+            if next_pc <= pc {
+                loop_count += 1;
+                if loop_count >= self.max_loop_count {
+                    return Err(GraphError::LoopLimitExceeded(self.max_loop_count));
+                }
             }
 
             pc = next_pc;
@@ -586,7 +598,7 @@ impl Graph {
         node_block_map: &HashMap<NodeId, usize>,
         parents_map: &HashMap<NodeId, Vec<NodeId>>,
         next_pc: &mut usize,
-    ) -> Result<(), GraphError> {
+    ) -> Result<bool, GraphError> {
         if let Some(flow) = output.get_flow() {
             match flow {
                 FlowControl::Loop(instr) => {
@@ -652,12 +664,12 @@ impl Graph {
                     }
                 }
                 FlowControl::Abort => {
-                    return Ok(());
+                    return Ok(true);
                 }
                 FlowControl::Continue => {}
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Checks for cycles in the abstract graph, and partitions the graph into blocks.
