@@ -131,28 +131,51 @@ impl Graph {
         let edges = self.abstract_graph.edges.clone();
 
         for (from_id, to_ids) in edges {
-            let mut rx_map: HashMap<NodeId, mpsc::Receiver<Content>> = HashMap::new();
+            // Resolve abstract node ID to concrete node IDs for folded loop nodes.
+            // If from_id is an abstract (folded) node, we need to find the actual
+            // concrete nodes that should send data.
+            let concrete_from_ids: Vec<NodeId> = self
+                .abstract_graph
+                .unfold_node(from_id)
+                .cloned()
+                .unwrap_or_else(|| vec![from_id]);
 
-            // Setup OutChannels for 'from_id'
-            {
-                if let Some(node_lock) = self.nodes.get(&from_id) {
+            for concrete_from_id in concrete_from_ids {
+                let mut rx_map: HashMap<NodeId, mpsc::Receiver<Content>> = HashMap::new();
+
+                // Resolve to_ids: unfold any abstract nodes to their concrete counterparts
+                let concrete_to_ids: Vec<NodeId> = to_ids
+                    .iter()
+                    .flat_map(|to_id| {
+                        self.abstract_graph
+                            .unfold_node(*to_id)
+                            .cloned()
+                            .unwrap_or_else(|| vec![*to_id])
+                    })
+                    .collect();
+
+                // Setup OutChannels for 'concrete_from_id'
+                if let Some(node_lock) = self.nodes.get(&concrete_from_id) {
                     let mut node = node_lock.lock().await;
                     let out_channels = node.output_channels();
 
-                    for to_id in &to_ids {
-                        let (tx, rx) = mpsc::channel::<Content>(32);
-                        out_channels.insert(*to_id, Arc::new(Mutex::new(OutChannel::Mpsc(tx))));
-                        rx_map.insert(*to_id, rx);
+                    for to_id in &concrete_to_ids {
+                        // Only create channel if target node exists in the graph
+                        if self.nodes.contains_key(to_id) {
+                            let (tx, rx) = mpsc::channel::<Content>(32);
+                            out_channels.insert(*to_id, Arc::new(Mutex::new(OutChannel::Mpsc(tx))));
+                            rx_map.insert(*to_id, rx);
+                        }
                     }
                 }
-            }
 
-            // Setup InChannels for 'to_ids'
-            for (to_id, rx) in rx_map {
-                if let Some(node_lock) = self.nodes.get(&to_id) {
-                    let mut node = node_lock.lock().await;
-                    node.input_channels()
-                        .insert(from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
+                // Setup InChannels for concrete to_ids
+                for (to_id, rx) in rx_map {
+                    if let Some(node_lock) = self.nodes.get(&to_id) {
+                        let mut node = node_lock.lock().await;
+                        node.input_channels()
+                            .insert(concrete_from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
+                    }
                 }
             }
         }
@@ -354,17 +377,13 @@ impl Graph {
             }
 
             // Handle skipped nodes
+            // Note: We do NOT close output channels here to support loop execution.
+            // Channels will be closed when the entire graph finishes.
             for node_id in skipped_block_nodes {
-                let node = self
-                    .nodes
-                    .get(&node_id)
-                    .ok_or(GraphError::NodeIdError(node_id.0))?;
-                let mut node: tokio::sync::MutexGuard<dyn Node> = node.lock().await;
-                node.output_channels().close_all();
                 let _ = self
                     .event_sender
                     .send(GraphEvent::NodeSkipped { id: node_id });
-                debug!("Skipped node [id: {}], output channels closed", node_id.0);
+                debug!("Skipped node [id: {}]", node_id.0);
             }
 
             if active_block_nodes.is_empty() {
@@ -423,8 +442,9 @@ impl Graph {
                         match result {
                             Ok(out) => {
                                 let out = out.await;
-                                // The original node lock guard acquired above was moved into
-                                // `node.run(...)` and dropped when that future completed.
+                                // Note: The original `node` guard was consumed when we called
+                                // `node.run(...)`. The `run` method takes `&mut self`, which
+                                // means the guard was borrowed and released when the call returned.
                                 // Re-acquire the lock here so we can run hooks and perform cleanup.
                                 let node = node_ref.lock().await;
 
@@ -557,6 +577,7 @@ impl Graph {
                     &self.node_block_map,
                     &parents_map,
                     &mut next_pc,
+                    self.blocks.len(),
                 )? {
                     should_abort = true;
                     break;
@@ -567,24 +588,35 @@ impl Graph {
                 break;
             }
 
-            // Check for loop
-            if next_pc <= pc {
+            // Check for loop (backward jump)
+            // Only increment loop counter on actual backward jumps (next_pc < pc)
+            // not on staying at the same block (next_pc == pc)
+            if next_pc < pc {
                 loop_count += 1;
                 if loop_count >= self.max_loop_count {
                     return Err(GraphError::LoopLimitExceeded(self.max_loop_count));
                 }
+                // Reset active_nodes on loop iteration to allow dynamic routing.
+                // This ensures that nodes pruned by a router in a previous iteration
+                // can be selected in subsequent iterations (e.g., alternating between branches).
+                active_nodes = self.nodes.keys().cloned().collect();
             }
 
             pc = next_pc;
         }
 
+        // Send GraphFinished event BEFORE setting is_active to false
+        // to avoid race conditions where subscribers see the flag change
+        // before receiving the event.
+        let _ = self.event_sender.send(GraphEvent::GraphFinished);
+
         self.is_active
             .store(false, std::sync::atomic::Ordering::Relaxed);
 
-        let _ = self.event_sender.send(GraphEvent::GraphFinished);
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_flow_control(
         &self,
         output: Output,
@@ -593,21 +625,63 @@ impl Graph {
         node_block_map: &HashMap<NodeId, usize>,
         parents_map: &HashMap<NodeId, Vec<NodeId>>,
         next_pc: &mut usize,
+        blocks_len: usize,
     ) -> Result<bool, GraphError> {
         if let Some(flow) = output.get_flow() {
             match flow {
                 FlowControl::Loop(instr) => {
                     if let Some(idx) = instr.jump_to_block_index {
-                        *next_pc = idx;
-                    } else if let Some(nid) = instr.jump_to_node {
-                        if let Some(&idx) = node_block_map.get(&NodeId(nid)) {
-                            *next_pc = idx;
-                        } else {
-                            error!("Invalid jump target: node {} not found in block map", nid);
+                        // Validate that the jump target is within valid block range
+                        if idx >= blocks_len {
+                            error!(
+                                "Graph configuration error: jump_to_block_index {} is out of bounds (blocks count: {})",
+                                idx, blocks_len
+                            );
                             return Err(GraphError::ExecutionFailed {
                                 node_name: format!("Node-{}", node_id.0),
                                 node_id: node_id.0,
-                                error: format!("Invalid jump target: node {} not found", nid),
+                                error: format!(
+                                    "Graph configuration error: jump_to_block_index {} is out of bounds. \
+                                     Valid range is 0..{}",
+                                    idx, blocks_len
+                                ),
+                            });
+                        }
+                        *next_pc = idx;
+                    } else if let Some(nid) = instr.jump_to_node {
+                        if let Some(&idx) = node_block_map.get(&NodeId(nid)) {
+                            // Validate that the resolved block index is within valid range
+                            // This should not happen in normal operation, but is a defensive check
+                            if idx >= blocks_len {
+                                error!(
+                                    "Internal error: node_block_map contains invalid block index {} for node {} (blocks count: {})",
+                                    idx, nid, blocks_len
+                                );
+                                return Err(GraphError::ExecutionFailed {
+                                    node_name: format!("Node-{}", node_id.0),
+                                    node_id: node_id.0,
+                                    error: format!(
+                                        "Internal error: node_block_map contains invalid block index {} for node {}. \
+                                         This indicates a bug in the graph partitioning logic.",
+                                        idx, nid
+                                    ),
+                                });
+                            }
+                            *next_pc = idx;
+                        } else {
+                            error!(
+                                "Graph configuration error: invalid jump target node {} not found in block map. \
+                                   This is likely due to an incorrect node ID in the LoopInstruction.",
+                                nid
+                            );
+                            return Err(GraphError::ExecutionFailed {
+                                node_name: format!("Node-{}", node_id.0),
+                                node_id: node_id.0,
+                                error: format!(
+                                    "Graph configuration error: invalid jump target node {} not found. \
+                                     Ensure the node ID exists in the graph.",
+                                    nid
+                                ),
                             });
                         }
                     }
@@ -659,6 +733,8 @@ impl Graph {
                     }
                 }
                 FlowControl::Abort => {
+                    // Set next_pc beyond the last block to exit the outer while loop
+                    *next_pc = usize::MAX;
                     return Ok(true);
                 }
                 FlowControl::Continue => {}

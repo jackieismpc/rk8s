@@ -165,11 +165,14 @@ impl Node for LoopNode {
         &mut self.out_channels
     }
     async fn run(&mut self, env: Arc<EnvVar>) -> Output {
-        let should_continue = self.condition.lock().unwrap().should_continue(
-            &self.in_channels,
-            &self.out_channels,
-            env,
-        );
+        let should_continue = self
+            .condition
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                log::warn!("LoopNode condition mutex was poisoned, recovering");
+                poisoned.into_inner()
+            })
+            .should_continue(&self.in_channels, &self.out_channels, env);
 
         if should_continue {
             Output::Flow(FlowControl::loop_to_node(self.target_node.as_usize()))
@@ -179,6 +182,12 @@ impl Node for LoopNode {
     }
 
     fn reset(&mut self) {
-        self.condition.lock().unwrap().reset();
+        self.condition
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                log::warn!("LoopNode condition mutex was poisoned during reset, recovering");
+                poisoned.into_inner()
+            })
+            .reset();
     }
 }
