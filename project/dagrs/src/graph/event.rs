@@ -33,6 +33,43 @@ pub enum GraphEvent {
     /// * `id`: The ID of the skipped node.
     NodeSkipped { id: NodeId },
 
+    /// Emitted when a node is about to be retried after a failure.
+    ///
+    /// * `id`: The ID of the node being retried.
+    /// * `attempt`: The current retry attempt number (1-indexed).
+    /// * `max_retries`: The maximum number of retries configured.
+    /// * `error`: The error message from the previous attempt.
+    NodeRetry {
+        id: NodeId,
+        attempt: u32,
+        max_retries: u32,
+        error: String,
+    },
+
+    /// Emitted when a loop iteration begins.
+    ///
+    /// * `iteration`: The current iteration number (0-indexed).
+    /// * `block_index`: The block index that the loop is jumping back to.
+    LoopIteration {
+        iteration: usize,
+        block_index: usize,
+    },
+
+    /// Emitted when a branch decision is made by a router/conditional node.
+    ///
+    /// * `node_id`: The ID of the decision node.
+    /// * `selected_branches`: The IDs (as usize) of the branches that were selected.
+    BranchSelected {
+        node_id: NodeId,
+        selected_branches: Vec<usize>,
+    },
+
+    /// Emitted periodically to report execution progress.
+    ///
+    /// * `completed`: Number of nodes that have completed execution.
+    /// * `total`: Total number of nodes in the graph.
+    Progress { completed: usize, total: usize },
+
     /// Emitted when the entire graph execution finishes (success or failure).
     ///
     /// This is the final event in the stream.

@@ -33,7 +33,7 @@ use error::GraphError;
 ///
 /// ['Graph'] is a network that satisfies FBP logic, provides node dependencies, and runs all of its nodes completely asynchronously
 /// A `Graph` contains multiple nodes, which can be added as long as they implement the [`Node`] trait.
-/// Each node defines specific execution logic by implementing the [`Action`] trait and overriding the `run` method.
+/// Each node defines specific execution logic by implementing the `Action` trait and overriding the `run` method.
 ///
 /// The execution process of a `Graph` proceeds as follows:
 /// - The user creates a set of nodes, each implementing the [`Node`] trait. These nodes can be created programmatically
@@ -285,7 +285,7 @@ impl Graph {
     /// Tokio runtime) and you do **not** want `Graph` to create and manage
     /// its own Tokio runtime.
     ///
-    /// Unlike [`start`], this method:
+    /// Unlike [`Graph::start`], this method:
     /// - Does not create a new Tokio runtime.
     /// - Assumes it is called on a thread where a Tokio runtime is already
     ///   active.
@@ -384,6 +384,15 @@ impl Graph {
                     .event_sender
                     .send(GraphEvent::NodeSkipped { id: node_id });
                 debug!("Skipped node [id: {}]", node_id.0);
+
+                // Hook: on_skip
+                if let Some(node) = self.nodes.get(&node_id) {
+                    let node_guard = node.lock().await;
+                    let hooks_guard = self.hooks.read().await;
+                    for hook in hooks_guard.iter() {
+                        hook.on_skip(&*node_guard, &self.env).await;
+                    }
+                }
             }
 
             if active_block_nodes.is_empty() {
@@ -596,6 +605,13 @@ impl Graph {
                 if loop_count >= self.max_loop_count {
                     return Err(GraphError::LoopLimitExceeded(self.max_loop_count));
                 }
+
+                // Event: LoopIteration
+                let _ = self.event_sender.send(GraphEvent::LoopIteration {
+                    iteration: loop_count,
+                    block_index: next_pc,
+                });
+
                 // Reset active_nodes on loop iteration to allow dynamic routing.
                 // This ensures that nodes pruned by a router in a previous iteration
                 // can be selected in subsequent iterations (e.g., alternating between branches).
@@ -687,6 +703,12 @@ impl Graph {
                     }
                 }
                 FlowControl::Branch(ids) => {
+                    // Event: BranchSelected
+                    let _ = self.event_sender.send(GraphEvent::BranchSelected {
+                        node_id,
+                        selected_branches: ids.clone(),
+                    });
+
                     let allowed: HashSet<usize> = ids.iter().cloned().collect();
                     if let Some(children) = self.abstract_graph.edges.get(&node_id) {
                         let mut to_prune = Vec::new();

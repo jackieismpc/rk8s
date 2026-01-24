@@ -142,7 +142,7 @@ impl dagrs::utils::hook::ExecutionHook for TestHook {
     async fn after_node_run(&self, _: &dyn Node, _: &Output, _: &Arc<EnvVar>) {
         *self.call_count.lock().unwrap() += 1;
     }
-    async fn on_error(&self, _: &dyn std::error::Error, _: &Arc<EnvVar>) {}
+    async fn on_error(&self, _: &(dyn std::error::Error + Send + Sync), _: &Arc<EnvVar>) {}
 }
 
 #[test]
