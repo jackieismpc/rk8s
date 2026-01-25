@@ -263,3 +263,170 @@ fn test_retry_decision_enum() {
     let cloned = decision.clone();
     assert_eq!(decision, cloned);
 }
+
+/// Node with retry support that fails N times before succeeding
+struct RetryableNode {
+    id: dagrs::node::NodeId,
+    name: dagrs::node::NodeName,
+    in_channels: InChannels,
+    out_channels: OutChannels,
+    fail_count: Arc<Mutex<usize>>,
+    failures_before_success: usize,
+    max_retries_config: u32,
+}
+
+impl RetryableNode {
+    fn new(
+        name: String,
+        failures_before_success: usize,
+        max_retries: u32,
+        fail_count: Arc<Mutex<usize>>,
+        table: &mut NodeTable,
+    ) -> Self {
+        Self {
+            id: table.alloc_id_for(&name),
+            name,
+            in_channels: InChannels::default(),
+            out_channels: OutChannels::default(),
+            fail_count,
+            failures_before_success,
+            max_retries_config: max_retries,
+        }
+    }
+}
+
+#[async_trait]
+impl Node for RetryableNode {
+    fn id(&self) -> dagrs::node::NodeId {
+        self.id
+    }
+    fn name(&self) -> dagrs::node::NodeName {
+        self.name.clone()
+    }
+    fn input_channels(&mut self) -> &mut InChannels {
+        &mut self.in_channels
+    }
+    fn output_channels(&mut self) -> &mut OutChannels {
+        &mut self.out_channels
+    }
+    async fn run(&mut self, _env: Arc<EnvVar>) -> Output {
+        let mut count = self.fail_count.lock().unwrap();
+        *count += 1;
+        if *count <= self.failures_before_success {
+            Output::Err(format!("Intentional failure #{}", *count))
+        } else {
+            Output::new(format!("Success after {} failures", *count - 1))
+        }
+    }
+    fn max_retries(&self) -> u32 {
+        self.max_retries_config
+    }
+    fn retry_delay_ms(&self, _attempt: u32) -> u64 {
+        10 // Short delay for testing
+    }
+}
+
+#[test]
+fn test_automatic_retry_success() {
+    use dagrs::graph::event::GraphEvent;
+
+    let mut graph = Graph::new();
+    let mut table = NodeTable::new();
+    let fail_count = Arc::new(Mutex::new(0));
+
+    // Node that fails 2 times then succeeds, with 3 retries allowed
+    let node = RetryableNode::new(
+        "RetryNode".to_string(),
+        2, // Fail 2 times
+        3, // Allow 3 retries
+        fail_count.clone(),
+        &mut table,
+    );
+
+    let mut receiver = graph.subscribe();
+    graph.add_node(node);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(async {
+        // Collect events
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let collector = tokio::spawn(async move {
+            let mut collected = Vec::new();
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_millis(500), receiver.recv())
+                    .await
+                {
+                    Ok(Ok(event)) => {
+                        let is_finished = matches!(event, GraphEvent::GraphFinished);
+                        collected.push(event);
+                        if is_finished {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            collected
+        });
+
+        let result = graph.async_start().await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let collected = collector.await.unwrap();
+        *events_clone.lock().unwrap() = collected;
+
+        (result, events)
+    });
+
+    // Should succeed after retries
+    assert!(result.0.is_ok(), "Graph should succeed after retries");
+
+    // Should have tried 3 times total (1 initial + 2 retries)
+    assert_eq!(*fail_count.lock().unwrap(), 3);
+
+    // Check for retry events
+    let events = result.1.lock().unwrap();
+    let retry_count = events
+        .iter()
+        .filter(|e| matches!(e, GraphEvent::NodeRetry { .. }))
+        .count();
+    assert_eq!(retry_count, 2, "Should have 2 retry events");
+}
+
+#[test]
+fn test_automatic_retry_exhausted() {
+    let mut graph = Graph::new();
+    let mut table = NodeTable::new();
+    let fail_count = Arc::new(Mutex::new(0));
+
+    // Node that always fails, with only 2 retries allowed
+    let node = RetryableNode::new(
+        "AlwaysFail".to_string(),
+        100, // Will keep failing
+        2,   // Only 2 retries
+        fail_count.clone(),
+        &mut table,
+    );
+
+    // Verify max_retries is set correctly
+    println!("Node max_retries: {}", node.max_retries());
+
+    graph.add_node(node);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(async { graph.async_start().await });
+
+    // Should fail after exhausting retries
+    assert!(
+        result.is_err(),
+        "Graph should fail after exhausting retries"
+    );
+
+    let actual_count = *fail_count.lock().unwrap();
+    println!("Actual fail count: {}", actual_count);
+
+    // Should have tried 3 times total (1 initial + 2 retries)
+    assert_eq!(actual_count, 3);
+}

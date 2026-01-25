@@ -72,6 +72,39 @@ pub trait Node: Send + Sync {
         false
     }
 
+    /// Returns the maximum number of retry attempts for this node.
+    ///
+    /// When a node fails (returns `Output::Err`), the graph executor will
+    /// retry the node up to this many times before marking it as failed.
+    ///
+    /// # Default
+    /// Returns 0 by default, meaning no retries (fail immediately).
+    ///
+    /// # Example
+    /// Override this method to enable retries:
+    /// ```ignore
+    /// fn max_retries(&self) -> u32 {
+    ///     3 // Retry up to 3 times
+    /// }
+    /// ```
+    fn max_retries(&self) -> u32 {
+        0
+    }
+
+    /// Returns the delay between retry attempts in milliseconds.
+    ///
+    /// This can be used to implement backoff strategies.
+    /// The default implementation returns a fixed 100ms delay.
+    ///
+    /// # Arguments
+    /// * `attempt` - The current retry attempt number (1-indexed)
+    ///
+    /// # Returns
+    /// Delay in milliseconds before the next retry attempt.
+    fn retry_delay_ms(&self, _attempt: u32) -> u64 {
+        100
+    }
+
     /// Reset the node state to its initial state.
     ///
     /// # Behavior

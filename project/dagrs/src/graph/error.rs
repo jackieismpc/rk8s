@@ -17,6 +17,8 @@ pub enum GraphError {
     RuntimeCreationFailed(String),
     /// Max loop limit exceeded
     LoopLimitExceeded(usize),
+    /// Checkpoint operation failed
+    CheckpointError(String),
 }
 
 impl std::fmt::Display for GraphError {

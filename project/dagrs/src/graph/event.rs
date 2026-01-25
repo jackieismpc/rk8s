@@ -70,6 +70,23 @@ pub enum GraphEvent {
     /// * `total`: Total number of nodes in the graph.
     Progress { completed: usize, total: usize },
 
+    /// Emitted when a checkpoint is saved.
+    ///
+    /// * `checkpoint_id`: The unique identifier of the saved checkpoint.
+    /// * `pc`: The program counter (block index) at checkpoint time.
+    /// * `completed_nodes`: Number of nodes that had completed at checkpoint time.
+    CheckpointSaved {
+        checkpoint_id: String,
+        pc: usize,
+        completed_nodes: usize,
+    },
+
+    /// Emitted when execution resumes from a checkpoint.
+    ///
+    /// * `checkpoint_id`: The identifier of the checkpoint being resumed from.
+    /// * `pc`: The program counter (block index) to resume from.
+    CheckpointRestored { checkpoint_id: String, pc: usize },
+
     /// Emitted when the entire graph execution finishes (success or failure).
     ///
     /// This is the final event in the stream.

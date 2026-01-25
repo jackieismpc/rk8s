@@ -193,4 +193,17 @@ impl Output {
             _ => None,
         }
     }
+
+    /// Check if the output is empty (Out(None)).
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Out(None))
+    }
+
+    /// Check if the output has content (not empty and not an error).
+    pub fn has_content(&self) -> bool {
+        matches!(
+            self,
+            Self::Out(Some(_)) | Self::ConditionResult(_) | Self::Flow(_)
+        )
+    }
 }
