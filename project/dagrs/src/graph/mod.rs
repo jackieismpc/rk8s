@@ -1,4 +1,5 @@
 mod abstract_graph;
+pub mod builder;
 pub mod error;
 pub mod event;
 pub mod loop_subgraph;
@@ -31,6 +32,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task;
 
 use abstract_graph::AbstractGraph;
+pub use builder::{GraphBuildError, GraphBuilder};
 use error::GraphError;
 
 /// [`Graph`] is dagrs's main body.

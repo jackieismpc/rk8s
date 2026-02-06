@@ -13,7 +13,7 @@ use dagrs::graph::event::GraphEvent;
 use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::{
-    Checkpoint, CheckpointConfig, CheckpointStore, EnvVar, Graph, InChannels,
+    Checkpoint, CheckpointConfig, CheckpointStore, EnvVar, Graph, GraphBuilder, InChannels,
     MemoryCheckpointStore, Node, NodeTable, OutChannels, Output,
 };
 use std::sync::{Arc, Mutex};
@@ -70,7 +70,7 @@ fn test_checkpoint_store_configuration() {
 
 #[tokio::test]
 async fn test_manual_checkpoint_save_and_load() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     // Set up graph with nodes
@@ -79,10 +79,11 @@ async fn test_manual_checkpoint_save_and_load() {
     let id_a = node_a.id();
     let id_b = node_b.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
-    graph.add_edge(id_a, vec![id_b]).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_edge(id_a, vec![id_b]).unwrap();
 
+    let mut graph = builder.build().unwrap();
     graph.set_checkpoint_store(Box::new(MemoryCheckpointStore::new()));
 
     // Run the graph first to initialize it
@@ -185,7 +186,7 @@ fn test_checkpoint_metadata() {
 
 #[tokio::test]
 async fn test_checkpoint_events() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let count = Arc::new(Mutex::new(0));
@@ -206,9 +207,11 @@ async fn test_checkpoint_events() {
     let id_a = node_a.id();
     let id_b = node_b.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
-    graph.add_edge(id_a, vec![id_b]).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_edge(id_a, vec![id_b]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     graph.set_checkpoint_store(Box::new(MemoryCheckpointStore::new()));
 
@@ -316,7 +319,7 @@ async fn test_checkpoint_serialization() {
 #[tokio::test]
 async fn test_resume_execution_basic() {
     // This test verifies basic resume functionality
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
     let executed = Arc::new(Mutex::new(Vec::new()));
 
@@ -340,9 +343,11 @@ async fn test_resume_execution_basic() {
     let id_a = node_a.id();
     let id_b = node_b.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
-    graph.add_edge(id_a, vec![id_b]).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_edge(id_a, vec![id_b]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     let store = MemoryCheckpointStore::new();
     graph.set_checkpoint_store(Box::new(store));

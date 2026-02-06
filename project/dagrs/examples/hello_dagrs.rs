@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dagrs::{
-    Action, Content, DefaultNode, EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output,
+    Action, Content, DefaultNode, EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels,
+    Output,
 };
 
 /// An implementation of [`Action`] that returns [`Output::Out`] containing a String "Hello world".
@@ -32,8 +33,9 @@ async fn main() {
     let id: &dagrs::NodeId = &hello_node.id();
 
     // create a graph with this node and run
-    let mut graph = Graph::new();
-    graph.add_node(hello_node).await;
+    let mut builder = GraphBuilder::new();
+    builder.add_node(hello_node).unwrap();
+    let mut graph = builder.build().unwrap();
 
     match graph.start().await {
         Ok(_) => {

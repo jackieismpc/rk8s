@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::router_node::{Router, RouterNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeId, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeId, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -43,7 +43,7 @@ async fn test_branch_pruning() {
     // Expect: A, Router, B, C executed.
     // Expect: D, E skipped.
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
     let executed = Arc::new(Mutex::new(Vec::new()));
 
@@ -85,15 +85,17 @@ async fn test_branch_pruning() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_b).await;
-    graph.add_node(node_c).await;
-    graph.add_node(node_d).await;
-    graph.add_node(node_e).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_node(node_c).unwrap();
+    builder.add_node(node_d).unwrap();
+    builder.add_node(node_e).unwrap();
 
-    graph.add_edge(id_router, vec![id_b, id_d]).await;
-    graph.add_edge(id_b, vec![id_c]).await;
-    graph.add_edge(id_d, vec![id_e]).await;
+    builder.add_edge(id_router, vec![id_b, id_d]).unwrap();
+    builder.add_edge(id_b, vec![id_c]).unwrap();
+    builder.add_edge(id_d, vec![id_e]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     match graph.start().await {
         Ok(_) => {}
@@ -127,7 +129,7 @@ async fn test_branch_pruning() {
 /// has multiple parents and at least one parent remains active.
 #[tokio::test]
 async fn test_branch_pruning_diamond_with_active_alternate_parent() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
     let executed = Arc::new(Mutex::new(Vec::new()));
 
@@ -179,23 +181,24 @@ async fn test_branch_pruning_diamond_with_active_alternate_parent() {
     let id_router = router.id();
 
     // Add all nodes
-    graph.add_node(router).await;
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
-    graph.add_node(node_c).await;
-    graph.add_node(node_d).await;
-    graph.add_node(node_e).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_node(node_c).unwrap();
+    builder.add_node(node_d).unwrap();
+    builder.add_node(node_e).unwrap();
 
     // Build topology:
     // Router -> A, C
     // A -> B
     // B -> D
     // E -> D (independent path to D)
-    graph.add_edge(id_router, vec![id_a, id_c]).await;
-    graph.add_edge(id_a, vec![id_b]).await;
-    graph.add_edge(id_b, vec![id_d]).await;
-    graph.add_edge(id_e, vec![id_d]).await; // E is an independent node that also connects to D
+    builder.add_edge(id_router, vec![id_a, id_c]).unwrap();
+    builder.add_edge(id_a, vec![id_b]).unwrap();
+    builder.add_edge(id_b, vec![id_d]).unwrap();
+    builder.add_edge(id_e, vec![id_d]).unwrap(); // E is an independent node that also connects to D
 
+    let mut graph = builder.build().unwrap();
     graph.start().await.unwrap();
 
     let exec_log = executed.lock().unwrap();
@@ -251,7 +254,7 @@ async fn test_branch_pruning_diamond_with_active_alternate_parent() {
 async fn test_router_in_loop_alternating_branches() {
     use dagrs::node::loop_node::{LoopCondition, LoopNode};
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
     let executed = Arc::new(Mutex::new(Vec::new()));
 
@@ -342,19 +345,20 @@ async fn test_router_in_loop_alternating_branches() {
     let id_loop = loop_node.id();
 
     // Add nodes
-    graph.add_node(router).await;
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
-    graph.add_node(loop_node).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_node(loop_node).unwrap();
 
     // Build topology:
     // Router -> A, B
     // A -> Loop
     // B -> Loop
-    graph.add_edge(id_router, vec![id_a, id_b]).await;
-    graph.add_edge(id_a, vec![id_loop]).await;
-    graph.add_edge(id_b, vec![id_loop]).await;
+    builder.add_edge(id_router, vec![id_a, id_b]).unwrap();
+    builder.add_edge(id_a, vec![id_loop]).unwrap();
+    builder.add_edge(id_b, vec![id_loop]).unwrap();
 
+    let mut graph = builder.build().unwrap();
     graph.start().await.unwrap();
 
     let exec_log = executed.lock().unwrap();

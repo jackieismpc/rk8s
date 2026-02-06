@@ -20,7 +20,7 @@ use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::loop_node::{CountLoopCondition, LoopNode};
 use dagrs::node::router_node::{Router, RouterNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -58,15 +58,16 @@ impl Router for FirstBranchRouter {
 
 #[tokio::test]
 async fn test_event_node_start_and_success() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
-
-    // Subscribe to events before adding nodes
-    let mut receiver = graph.subscribe();
 
     let node = DefaultNode::with_action("TestNode".to_string(), NoOpAction, &mut table);
     let node_id = node.id();
-    graph.add_node(node).await;
+    builder.add_node(node).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    // Subscribe to events after building the graph
+    let mut receiver = graph.subscribe();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -122,14 +123,15 @@ async fn test_event_node_start_and_success() {
 
 #[tokio::test]
 async fn test_event_node_failed() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
-
-    let mut receiver = graph.subscribe();
 
     let node = DefaultNode::with_action("FailingNode".to_string(), FailingAction, &mut table);
     let node_id = node.id();
-    graph.add_node(node).await;
+    builder.add_node(node).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    let mut receiver = graph.subscribe();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -177,10 +179,8 @@ async fn test_event_node_failed() {
 #[tokio::test]
 async fn test_event_node_skipped() {
     // Test that on_skip is called when a node is pruned by a router
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
-
-    let mut receiver = graph.subscribe();
 
     // Create nodes
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
@@ -199,11 +199,14 @@ async fn test_event_node_skipped() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
 
-    graph.add_edge(id_router, vec![id_a, id_b]).await;
+    builder.add_edge(id_router, vec![id_a, id_b]).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    let mut receiver = graph.subscribe();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -256,10 +259,8 @@ async fn test_event_loop_execution() {
     // In simple topologies where all nodes are in the same block, the loop still works
     // but LoopIteration events may not be emitted.
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
-
-    let mut receiver = graph.subscribe();
 
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
     let id_a = node_a.id();
@@ -272,10 +273,13 @@ async fn test_event_loop_execution() {
     );
     let _id_loop = loop_node.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(loop_node).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(loop_node).unwrap();
 
-    graph.add_edge(id_a, vec![_id_loop]).await;
+    builder.add_edge(id_a, vec![_id_loop]).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    let mut receiver = graph.subscribe();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -331,10 +335,8 @@ async fn test_event_loop_execution() {
 
 #[tokio::test]
 async fn test_event_branch_selected() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
-
-    let mut receiver = graph.subscribe();
 
     // Create nodes
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
@@ -353,11 +355,14 @@ async fn test_event_branch_selected() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
 
-    graph.add_edge(id_router, vec![id_a, id_b]).await;
+    builder.add_edge(id_router, vec![id_a, id_b]).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    let mut receiver = graph.subscribe();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();

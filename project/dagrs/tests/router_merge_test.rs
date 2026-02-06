@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::router_node::{Router, RouterNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 /// Action that marks execution
@@ -42,7 +42,7 @@ async fn test_router_merge() {
     // We want to execute A -> Router -> B -> D.
     // C is skipped. D should be executed because B executed.
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let exec_b = Arc::new(Mutex::new(false));
@@ -85,14 +85,16 @@ async fn test_router_merge() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_b).await;
-    graph.add_node(node_c).await;
-    graph.add_node(node_d).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_node(node_c).unwrap();
+    builder.add_node(node_d).unwrap();
 
-    graph.add_edge(id_router, vec![id_b, id_c]).await;
-    graph.add_edge(id_b, vec![id_d]).await;
-    graph.add_edge(id_c, vec![id_d]).await;
+    builder.add_edge(id_router, vec![id_b, id_c]).unwrap();
+    builder.add_edge(id_b, vec![id_d]).unwrap();
+    builder.add_edge(id_c, vec![id_d]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     match graph.start().await {
         Ok(_) => {}

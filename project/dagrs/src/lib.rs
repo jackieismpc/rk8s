@@ -12,6 +12,7 @@ pub use node::*;
 
 pub use async_trait;
 pub use graph::*;
+pub use graph::builder::{GraphBuildError, GraphBuilder};
 pub use tokio;
 pub use utils::checkpoint::{
     Checkpoint, CheckpointConfig, CheckpointError, CheckpointId, CheckpointStore,

@@ -13,7 +13,7 @@ use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::router_node::{Router, RouterNode};
 use dagrs::utils::hook::{ExecutionHook, RetryDecision};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 /// A comprehensive test hook that tracks all hook invocations.
@@ -102,7 +102,7 @@ impl Router for SelectARouter {
 
 #[tokio::test]
 async fn test_hook_before_and_after() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let before_runs = Arc::new(Mutex::new(Vec::new()));
@@ -116,16 +116,19 @@ async fn test_hook_before_and_after() {
         retries: Arc::new(Mutex::new(Vec::new())),
     };
 
-    graph.add_hook(Box::new(hook)).await;
+    let hook = Box::new(hook);
 
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
     let node_b = DefaultNode::with_action("NodeB".to_string(), NoOpAction, &mut table);
     let id_a = node_a.id();
     let id_b = node_b.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
-    graph.add_edge(id_a, vec![id_b]).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_edge(id_a, vec![id_b]).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    graph.add_hook(hook).await;
 
     graph.start().await.expect("Graph should succeed");
 
@@ -143,7 +146,7 @@ async fn test_hook_before_and_after() {
 
 #[tokio::test]
 async fn test_hook_on_error() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let errors = Arc::new(Mutex::new(Vec::new()));
@@ -156,7 +159,7 @@ async fn test_hook_on_error() {
         retries: Arc::new(Mutex::new(Vec::new())),
     };
 
-    graph.add_hook(Box::new(hook)).await;
+    let hook = Box::new(hook);
 
     let failing_node = DefaultNode::with_action(
         "FailingNode".to_string(),
@@ -166,7 +169,10 @@ async fn test_hook_on_error() {
         &mut table,
     );
 
-    graph.add_node(failing_node).await;
+    builder.add_node(failing_node).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    graph.add_hook(hook).await;
 
     let result = graph.start().await;
     assert!(result.is_err(), "Graph should fail due to node error");
@@ -182,7 +188,7 @@ async fn test_hook_on_error() {
 #[tokio::test]
 async fn test_hook_on_skip() {
     // Test that on_skip is called when a node is pruned by a router
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let skips = Arc::new(Mutex::new(Vec::new()));
@@ -195,7 +201,7 @@ async fn test_hook_on_skip() {
         retries: Arc::new(Mutex::new(Vec::new())),
     };
 
-    graph.add_hook(Box::new(hook)).await;
+    let hook = Box::new(hook);
 
     // Create nodes
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
@@ -214,12 +220,15 @@ async fn test_hook_on_skip() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
 
     // Router -> A, Router -> B
-    graph.add_edge(id_router, vec![id_a, id_b]).await;
+    builder.add_edge(id_router, vec![id_a, id_b]).unwrap();
+
+    let mut graph = builder.build().unwrap();
+    graph.add_hook(hook).await;
 
     graph.start().await.expect("Graph should succeed");
 
@@ -315,7 +324,7 @@ impl Node for RetryableNode {
 async fn test_automatic_retry_success() {
     use dagrs::graph::event::GraphEvent;
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
     let fail_count = Arc::new(Mutex::new(0));
 
@@ -328,8 +337,10 @@ async fn test_automatic_retry_success() {
         &mut table,
     );
 
+    builder.add_node(node).unwrap();
+
+    let mut graph = builder.build().unwrap();
     let mut receiver = graph.subscribe();
-    graph.add_node(node).await;
 
     // Collect events
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -376,7 +387,7 @@ async fn test_automatic_retry_success() {
 
 #[tokio::test]
 async fn test_automatic_retry_exhausted() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
     let fail_count = Arc::new(Mutex::new(0));
 
@@ -392,7 +403,9 @@ async fn test_automatic_retry_exhausted() {
     // Verify max_retries is set correctly
     println!("Node max_retries: {}", node.max_retries());
 
-    graph.add_node(node).await;
+    builder.add_node(node).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     let result = graph.start().await;
 

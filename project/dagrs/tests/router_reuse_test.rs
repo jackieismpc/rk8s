@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::router_node::{Router, RouterNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeId, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeId, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 /// Action that marks execution
@@ -50,7 +50,7 @@ impl Router for SwitchRouter {
 
 #[tokio::test]
 async fn test_router_reuse() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let exec_a = Arc::new(Mutex::new(false));
@@ -84,9 +84,9 @@ async fn test_router_reuse() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_a).await;
-    graph.add_node(node_b).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_a).unwrap();
+    builder.add_node(node_b).unwrap();
 
     // Add Node C downstream of B
     let exec_c = Arc::new(Mutex::new(false));
@@ -98,10 +98,12 @@ async fn test_router_reuse() {
         &mut table,
     );
     let id_c = node_c.id();
-    graph.add_node(node_c).await;
+    builder.add_node(node_c).unwrap();
 
-    graph.add_edge(id_router, vec![id_a, id_b]).await;
-    graph.add_edge(id_b, vec![id_c]).await;
+    builder.add_edge(id_router, vec![id_a, id_b]).unwrap();
+    builder.add_edge(id_b, vec![id_c]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     // First Run: Target A
     println!("First Run: Expect A to run");

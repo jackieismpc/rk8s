@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dagrs::{
-    Content, DefaultNode, EnvVar, Graph, Node, NodeTable, Output,
+    Content, DefaultNode, EnvVar, GraphBuilder, Node, NodeTable, Output,
     connection::{in_channel::TypedInChannels, out_channel::TypedOutChannels},
     node::typed_action::TypedAction,
 };
@@ -89,21 +89,23 @@ async fn main() {
     let g = DefaultNode::with_action("Compute G".to_string(), Compute(64), &mut node_table);
     let g_id = g.id();
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     for node in vec![a, b, c, d, e, f, g] {
-        graph.add_node(node).await;
+        builder.add_node(node).unwrap();
     }
 
-    graph.add_edge(a_id, vec![b_id, c_id, d_id]).await;
-    graph.add_edge(b_id, vec![e_id, g_id]).await;
-    graph.add_edge(c_id, vec![e_id, f_id]).await;
-    graph.add_edge(d_id, vec![f_id]).await;
-    graph.add_edge(e_id, vec![g_id]).await;
-    graph.add_edge(f_id, vec![g_id]).await;
+    builder.add_edge(a_id, vec![b_id, c_id, d_id]).unwrap();
+    builder.add_edge(b_id, vec![e_id, g_id]).unwrap();
+    builder.add_edge(c_id, vec![e_id, f_id]).unwrap();
+    builder.add_edge(d_id, vec![f_id]).unwrap();
+    builder.add_edge(e_id, vec![g_id]).unwrap();
+    builder.add_edge(f_id, vec![g_id]).unwrap();
 
     let mut env = EnvVar::new(node_table);
     env.set("base", 2usize);
-    graph.set_env(env);
+    builder.set_env(env);
+
+    let mut graph = builder.build().unwrap();
 
     match graph.start().await {
         Ok(_) => {

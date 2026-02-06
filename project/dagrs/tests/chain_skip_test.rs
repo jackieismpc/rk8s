@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::router_node::{Router, RouterNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 // Action that expects data, but if input closed, returns empty (and doesn't send anything)
@@ -53,7 +53,7 @@ impl Router for SwitchRouter {
 
 #[tokio::test]
 async fn test_chain_skip_deadlock() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     // A -> Router -> B -> C -> D
@@ -89,14 +89,16 @@ async fn test_chain_skip_deadlock() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_b).await;
-    graph.add_node(node_c).await;
-    graph.add_node(node_d).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_node(node_c).unwrap();
+    builder.add_node(node_d).unwrap();
 
-    graph.add_edge(id_router, vec![id_b]).await;
-    graph.add_edge(id_b, vec![id_c]).await;
-    graph.add_edge(id_c, vec![id_d]).await;
+    builder.add_edge(id_router, vec![id_b]).unwrap();
+    builder.add_edge(id_b, vec![id_c]).unwrap();
+    builder.add_edge(id_c, vec![id_d]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     println!("Starting Graph...");
     // Set timeout to detect deadlock

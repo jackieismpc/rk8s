@@ -31,7 +31,7 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use dagrs::{
-    DefaultNode, EnvVar, Graph, Node, NodeTable, Output,
+    DefaultNode, EnvVar, GraphBuilder, Node, NodeTable, Output,
     connection::{in_channel::TypedInChannels, out_channel::TypedOutChannels},
     node::typed_action::TypedAction,
 };
@@ -166,17 +166,19 @@ async fn main() {
     let sender2_id = sender2.id();
     let receiver_id = receiver.id();
 
-    // Create a graph
-    let mut graph = Graph::new();
+    // Create a graph builder
+    let mut builder = GraphBuilder::new();
 
     // Add nodes to the graph
-    graph.add_node(sender1).await;
-    graph.add_node(sender2).await;
-    graph.add_node(receiver).await;
+    builder.add_node(sender1).unwrap();
+    builder.add_node(sender2).unwrap();
+    builder.add_node(receiver).unwrap();
 
     // Add edges: both senders connect to the receiver
-    graph.add_edge(sender1_id, vec![receiver_id]).await;
-    graph.add_edge(sender2_id, vec![receiver_id]).await;
+    builder.add_edge(sender1_id, vec![receiver_id]).unwrap();
+    builder.add_edge(sender2_id, vec![receiver_id]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     // Run the graph
     match graph.start().await {

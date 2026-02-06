@@ -22,8 +22,8 @@ use std::{env, sync::Arc};
 
 use async_trait::async_trait;
 use dagrs::{
-    Action, Content, DefaultNode, EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output,
-    node::conditional_node::{Condition, ConditionalNode},
+    Action, Content, DefaultNode, EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels,
+    Output, node::conditional_node::{Condition, ConditionalNode},
 };
 
 const BASE: &str = "base";
@@ -116,26 +116,28 @@ async fn main() {
     let g = DefaultNode::with_action("Compute G".to_string(), Compute(64), &mut node_table);
     let g_id = g.id();
 
-    // Create a graph.
-    let mut graph = Graph::new();
+    // Create a graph builder.
+    let mut builder = GraphBuilder::new();
     for node in vec![a, b, c, d, e, f, g] {
-        graph.add_node(node).await;
+        builder.add_node(node).unwrap();
     }
-    graph.add_node(x).await;
+    builder.add_node(x).unwrap();
 
     // Set up task dependencies.
-    graph.add_edge(a_id, vec![b_id, c_id, d_id]).await;
-    graph.add_edge(b_id, vec![e_id, x_id]).await;
-    graph.add_edge(c_id, vec![e_id, f_id]).await;
-    graph.add_edge(d_id, vec![f_id]).await;
-    graph.add_edge(e_id, vec![x_id]).await;
-    graph.add_edge(x_id, vec![g_id]).await;
-    graph.add_edge(f_id, vec![g_id]).await;
+    builder.add_edge(a_id, vec![b_id, c_id, d_id]).unwrap();
+    builder.add_edge(b_id, vec![e_id, x_id]).unwrap();
+    builder.add_edge(c_id, vec![e_id, f_id]).unwrap();
+    builder.add_edge(d_id, vec![f_id]).unwrap();
+    builder.add_edge(e_id, vec![x_id]).unwrap();
+    builder.add_edge(x_id, vec![g_id]).unwrap();
+    builder.add_edge(f_id, vec![g_id]).unwrap();
 
     // Set a global environment variable for this dag.
     let mut env = EnvVar::new(node_table);
     env.set("base", 2usize);
-    graph.set_env(env);
+    builder.set_env(env);
+
+    let mut graph = builder.build().unwrap();
 
     // Start executing this dag.
     match graph.start().await {

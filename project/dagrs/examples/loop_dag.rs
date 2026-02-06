@@ -13,8 +13,8 @@ use std::{env, fmt::Display, sync::Arc};
 
 use async_trait::async_trait;
 use dagrs::{
-    Action, Content, DefaultNode, EnvVar, Graph, InChannels, Node, NodeId, NodeTable, OutChannels,
-    Output, graph::loop_subgraph::LoopSubgraph,
+    Action, Content, DefaultNode, EnvVar, GraphBuilder, InChannels, Node, NodeId, NodeTable,
+    OutChannels, Output, graph::loop_subgraph::LoopSubgraph,
 };
 
 struct InAction;
@@ -142,15 +142,17 @@ async fn main() {
     inter_proc.add_node(inter);
     inter_proc.add_node(proc);
 
-    // Create graph and add nodes
-    let mut graph = Graph::new();
-    graph.add_node(in_node).await;
-    graph.add_node(inter_proc).await;
+    // Create graph builder and add nodes
+    let mut builder = GraphBuilder::new();
+    builder.add_node(in_node).unwrap();
+    builder.add_node(inter_proc).unwrap();
 
     // Set up dependencies to create the loop
-    graph.add_edge(in_id, vec![inter_id]).await;
-    graph.add_edge(inter_id, vec![proc_id]).await;
-    graph.add_edge(proc_id, vec![inter_id]).await;
+    builder.add_edge(in_id, vec![inter_id]).unwrap();
+    builder.add_edge(inter_id, vec![proc_id]).unwrap();
+    builder.add_edge(proc_id, vec![inter_id]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     // Execute graph
     match graph.start().await {

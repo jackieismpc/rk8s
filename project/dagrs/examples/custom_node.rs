@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dagrs::{
-    Content, EnvVar, Graph, InChannels, Node, NodeId, NodeName, NodeTable, OutChannels, Output,
+    Content, EnvVar, GraphBuilder, InChannels, Node, NodeId, NodeName, NodeTable, OutChannels,
+    Output,
 };
 
 struct MessageNode {
@@ -62,8 +63,9 @@ async fn main() {
     let id: &dagrs::NodeId = &node.id();
 
     // create a graph with this node and run
-    let mut graph = Graph::new();
-    graph.add_node(node).await;
+    let mut builder = GraphBuilder::new();
+    builder.add_node(node).unwrap();
+    let mut graph = builder.build().unwrap();
     match graph.start().await {
         Ok(_) => {
             // verify the output of this node

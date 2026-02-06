@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::loop_node::{CountLoopCondition, LoopNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 /// Action that increments a counter
@@ -23,7 +23,7 @@ impl Action for IncAction {
 
 #[tokio::test]
 async fn test_loop_reset() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let counter = Arc::new(Mutex::new(0));
@@ -47,11 +47,13 @@ async fn test_loop_reset() {
     );
     let id_loop = loop_node.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(loop_node).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(loop_node).unwrap();
 
     // A -> Loop
-    graph.add_edge(id_a, vec![id_loop]).await;
+    builder.add_edge(id_a, vec![id_loop]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     // # Dynamic Jump Mechanism
     //

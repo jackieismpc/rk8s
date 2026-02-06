@@ -3,7 +3,7 @@ use dagrs::node::action::Action;
 use dagrs::node::default_node::DefaultNode;
 use dagrs::node::loop_node::{CountLoopCondition, LoopNode};
 use dagrs::node::router_node::{Router, RouterNode};
-use dagrs::{EnvVar, Graph, InChannels, Node, NodeTable, OutChannels, Output};
+use dagrs::{EnvVar, GraphBuilder, InChannels, Node, NodeTable, OutChannels, Output};
 use std::sync::{Arc, Mutex};
 
 /// Action that counts executions
@@ -24,7 +24,7 @@ impl Action for CounterAction {
 
 #[tokio::test]
 async fn test_loop_node() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let count = Arc::new(Mutex::new(0));
@@ -43,11 +43,13 @@ async fn test_loop_node() {
     );
     let id_loop = loop_node.id();
 
-    graph.add_node(node_a).await;
-    graph.add_node(loop_node).await;
+    builder.add_node(node_a).unwrap();
+    builder.add_node(loop_node).unwrap();
 
     // A -> Loop
-    graph.add_edge(id_a, vec![id_loop]).await;
+    builder.add_edge(id_a, vec![id_loop]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     match graph.start().await {
         Ok(_) => {}
@@ -75,7 +77,7 @@ impl Router for SimpleRouter {
 
 #[tokio::test]
 async fn test_router_node() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let count_b = Arc::new(Mutex::new(0));
@@ -108,12 +110,14 @@ async fn test_router_node() {
     );
     let id_router = router.id();
 
-    graph.add_node(router).await;
-    graph.add_node(node_b).await;
-    graph.add_node(node_c).await;
+    builder.add_node(router).unwrap();
+    builder.add_node(node_b).unwrap();
+    builder.add_node(node_c).unwrap();
 
     // Router -> B, Router -> C
-    graph.add_edge(id_router, vec![id_b, id_c]).await;
+    builder.add_edge(id_router, vec![id_b, id_c]).unwrap();
+
+    let mut graph = builder.build().unwrap();
 
     match graph.start().await {
         Ok(_) => {}

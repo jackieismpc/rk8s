@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 use dagrs::{
-    Content, DefaultNode, EnvVar, Graph, Node, NodeTable, Output,
+    Content, DefaultNode, EnvVar, GraphBuilder, Node, NodeTable, Output,
     connection::{in_channel::TypedInChannels, out_channel::TypedOutChannels},
     node::typed_action::TypedAction,
 };
@@ -104,7 +104,7 @@ async fn test_typed_channel_chain() {
     // Test topology: Producer -> Double -> Consumer
     // Producer outputs 5, Double doubles it to 10, Consumer receives 10
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let producer = DefaultNode::with_action("Producer".to_string(), ProducerAction(5), &mut table);
@@ -123,13 +123,14 @@ async fn test_typed_channel_chain() {
     );
     let consumer_id = consumer.id();
 
-    graph.add_node(producer).await;
-    graph.add_node(double).await;
-    graph.add_node(consumer).await;
+    builder.add_node(producer).unwrap();
+    builder.add_node(double).unwrap();
+    builder.add_node(consumer).unwrap();
 
-    graph.add_edge(producer_id, vec![double_id]).await;
-    graph.add_edge(double_id, vec![consumer_id]).await;
+    builder.add_edge(producer_id, vec![double_id]).unwrap();
+    builder.add_edge(double_id, vec![consumer_id]).unwrap();
 
+    let mut graph = builder.build().unwrap();
     graph.start().await.expect("Graph execution failed");
 
     // Verify the result: 5 * 2 = 10
@@ -187,7 +188,7 @@ impl TypedAction for StringConsumer {
 
 #[tokio::test]
 async fn test_typed_channel_with_string() {
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let producer = DefaultNode::with_action(
@@ -207,11 +208,12 @@ async fn test_typed_channel_with_string() {
     );
     let consumer_id = consumer.id();
 
-    graph.add_node(producer).await;
-    graph.add_node(consumer).await;
+    builder.add_node(producer).unwrap();
+    builder.add_node(consumer).unwrap();
 
-    graph.add_edge(producer_id, vec![consumer_id]).await;
+    builder.add_edge(producer_id, vec![consumer_id]).unwrap();
 
+    let mut graph = builder.build().unwrap();
     graph.start().await.expect("Graph execution failed");
 
     assert_eq!(
@@ -230,7 +232,7 @@ async fn test_typed_channel_multiple_inputs() {
     //
     // Adder doubles the sum: (3 + 7) * 2 = 20
 
-    let mut graph = Graph::new();
+    let mut builder = GraphBuilder::new();
     let mut table = NodeTable::new();
 
     let producer1 =
@@ -254,15 +256,16 @@ async fn test_typed_channel_multiple_inputs() {
     );
     let consumer_id = consumer.id();
 
-    graph.add_node(producer1).await;
-    graph.add_node(producer2).await;
-    graph.add_node(adder).await;
-    graph.add_node(consumer).await;
+    builder.add_node(producer1).unwrap();
+    builder.add_node(producer2).unwrap();
+    builder.add_node(adder).unwrap();
+    builder.add_node(consumer).unwrap();
 
-    graph.add_edge(producer1_id, vec![adder_id]).await;
-    graph.add_edge(producer2_id, vec![adder_id]).await;
-    graph.add_edge(adder_id, vec![consumer_id]).await;
+    builder.add_edge(producer1_id, vec![adder_id]).unwrap();
+    builder.add_edge(producer2_id, vec![adder_id]).unwrap();
+    builder.add_edge(adder_id, vec![consumer_id]).unwrap();
 
+    let mut graph = builder.build().unwrap();
     graph.start().await.expect("Graph execution failed");
 
     // (3 + 7) * 2 = 20
