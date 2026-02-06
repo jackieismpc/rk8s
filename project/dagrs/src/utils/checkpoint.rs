@@ -28,7 +28,7 @@
 //! graph.set_checkpoint_interval(5); // Checkpoint every 5 nodes
 //!
 //! // Run with automatic checkpointing
-//! graph.async_start().await?;
+//! graph.start().await?;
 //!
 //! // Or resume from a checkpoint
 //! graph.resume_from_checkpoint("checkpoint_123").await?;

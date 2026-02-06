@@ -25,6 +25,16 @@ use crate::{
 
 use id_allocate::alloc_id;
 
+/// Defines the scheduling mode for a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SchedulingMode {
+    /// Async task (default): Suitable for IO-bound tasks. Runs on Tokio worker threads.
+    #[default]
+    Async,
+    /// Blocking task: Suitable for CPU-bound or legacy synchronous code. Runs on Tokio blocking threads.
+    Blocking,
+}
+
 ///# The [`Node`] trait
 ///
 /// Nodes are the basic scheduling units of Graph. They can be identified by
@@ -113,6 +123,13 @@ pub trait Node: Send + Sync {
     /// - Nodes with internal state (e.g., counters, buffers) **MUST** implement this method
     ///   to ensure correct behavior when the graph is re-executed.
     fn reset(&mut self) {}
+
+    /// Specifies the scheduling mode for this node.
+    ///
+    /// Defaults to `SchedulingMode::Async`. If this is a CPU-bound node, override this to return `SchedulingMode::Blocking`.
+    fn scheduling_mode(&self) -> SchedulingMode {
+        SchedulingMode::Async
+    }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, Ord, PartialOrd)]

@@ -110,12 +110,12 @@ For more detailed info about this example, please see the [notebook.ipynb](examp
 
 #### 🚀 New Features
 
-- **Async Execution Interface**: Added `run_async()` method to `Graph`, providing an async API that allows using dagrs within existing Tokio runtime environments. `start()` method now serves as a synchronous wrapper around the async API, maintaining backward compatibility while providing better async support
+- **Async Execution Interface**: `Graph::start()` is now async and must be awaited when running inside a Tokio runtime. The library no longer creates its own runtime.
 
 #### 💡 Usage Recommendations
 
-- In environments with an existing Tokio runtime (e.g., async main functions, web services), use `run_async().await` instead of `start()`
-- In simple standalone applications or testing scenarios, you can continue using the `start()` method
+- In environments with an existing Tokio runtime (e.g., async main functions, web services), use `graph.start().await`
+- The library expects a user-provided Tokio runtime; do not create a nested runtime inside async contexts
 
 ## Contribution
 

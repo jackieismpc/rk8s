@@ -16,7 +16,7 @@ use crate::{
     Output,
     connection::{in_channel::InChannel, information_packet::Content, out_channel::OutChannel},
     graph::event::GraphEvent,
-    node::{Node, NodeId, NodeTable},
+    node::{Node, NodeId, NodeTable, SchedulingMode},
     utils::checkpoint::{
         Checkpoint, CheckpointConfig, CheckpointError, CheckpointStore, NodeState,
     },
@@ -60,8 +60,8 @@ use error::GraphError;
 pub struct Graph {
     /// Define the Net struct that holds all nodes
     pub(crate) nodes: HashMap<NodeId, Arc<Mutex<dyn Node>>>,
-    /// Store a task's running result.Execution results will be read
-    /// and written asynchronously by several threads.
+    /// Store a task's running result. Execution results will be read
+    /// and written asynchronously by concurrent tasks.
     pub(crate) execute_states: HashMap<NodeId, Arc<ExecState>>,
     /// Count all the nodes
     pub(crate) node_count: usize,
@@ -565,7 +565,9 @@ impl Graph {
                 let hooks = self.hooks.clone();
                 let event_sender = self.event_sender.clone();
 
-                let task = task::spawn({
+                let scheduling_mode = node.lock().await.scheduling_mode();
+
+                let task_future = {
                     let errors = Arc::clone(&errors);
                     async move {
                         let node_ref: Arc<Mutex<dyn Node>> = node.clone();
@@ -759,7 +761,7 @@ impl Graph {
                             Err(_) => {
                                 // Panic occurred
                                 let mut node_guard = node_ref.lock().await;
-                                node_guard.input_channels().close_all();
+                                node_guard.input_channels().close_all().await;
                                 node_guard.output_channels().close_all();
 
                                 error!("Execution panic [name: {}, id: {}]", node_name, id_val);
@@ -788,7 +790,14 @@ impl Graph {
                             }
                         }
                     }
-                });
+                };
+
+                let task = match scheduling_mode {
+                    SchedulingMode::Async => task::spawn(task_future),
+                    SchedulingMode::Blocking => task::spawn_blocking(move || {
+                        tokio::runtime::Handle::current().block_on(task_future)
+                    }),
+                };
                 tasks.push(task);
             }
 
@@ -976,22 +985,21 @@ impl Graph {
     }
 
     /// Adds a new node to the `Graph`
-    pub fn add_node(&mut self, node: impl Node + 'static) {
+    pub async fn add_node(&mut self, node: impl Node + 'static) {
         if let Some(loop_structure) = node.loop_structure() {
             // Expand loop subgraph, and update concrete node id -> abstract node id mapping in abstract_graph
             let abstract_node_id = node.id();
 
             log::debug!("Add node {:?} to abstract graph", abstract_node_id);
-            self.abstract_graph.add_folded_node(
-                abstract_node_id,
-                loop_structure
-                    .iter()
-                    .map(|n| n.blocking_lock().id())
-                    .collect(),
-            );
+            let mut folded_nodes = Vec::new();
+            for n in loop_structure.iter() {
+                folded_nodes.push(n.lock().await.id());
+            }
+            self.abstract_graph
+                .add_folded_node(abstract_node_id, folded_nodes);
 
             for node in loop_structure {
-                let concrete_id = node.blocking_lock().id();
+                let concrete_id = node.lock().await.id();
                 log::debug!("Add node {:?} to concrete graph", concrete_id);
                 self.nodes.insert(concrete_id, node.clone());
             }
@@ -1010,14 +1018,14 @@ impl Graph {
     /// If the outgoing port of the sending node is empty and the number of receiving nodes is > 1, use the broadcast channel
     /// An MPSC channel is used if the outgoing port of the sending node is empty and the number of receiving nodes is equal to 1
     /// If the outgoing port of the sending node is not empty, adding any number of receiving nodes will change all relevant channels to broadcast
-    pub fn add_edge(&mut self, from_id: NodeId, all_to_ids: Vec<NodeId>) {
+    pub async fn add_edge(&mut self, from_id: NodeId, all_to_ids: Vec<NodeId>) {
         let to_ids = Self::remove_duplicates(all_to_ids);
         let mut rx_map: HashMap<NodeId, mpsc::Receiver<Content>> = HashMap::new();
 
         // Update channels
         {
             let from_node_lock = self.nodes.get_mut(&from_id).unwrap();
-            let mut from_node = from_node_lock.blocking_lock();
+            let mut from_node = from_node_lock.lock().await;
             let from_channel = from_node.output_channels();
 
             for to_id in &to_ids {
@@ -1037,7 +1045,7 @@ impl Graph {
         }
         for to_id in &to_ids {
             if let Some(to_node_lock) = self.nodes.get_mut(to_id) {
-                let mut to_node = to_node_lock.blocking_lock();
+                let mut to_node = to_node_lock.lock().await;
                 let to_channel = to_node.input_channels();
                 if let Some(rx) = rx_map.remove(to_id) {
                     to_channel.insert(from_id, Arc::new(Mutex::new(InChannel::Mpsc(rx))));
@@ -1055,12 +1063,6 @@ impl Graph {
         });
     }
 
-    /// This function is used for the execution of a single dag.
-    pub fn start(&mut self) -> Result<(), GraphError> {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| GraphError::RuntimeCreationFailed(e.to_string()))?;
-        runtime.block_on(async { self.async_start().await })
-    }
     /// Executes a single DAG within an existing async runtime.
     ///
     /// Use this method when you are already running inside an async context
@@ -1068,7 +1070,7 @@ impl Graph {
     /// Tokio runtime) and you do **not** want `Graph` to create and manage
     /// its own Tokio runtime.
     ///
-    /// Unlike [`Graph::start`], this method:
+    /// Unlike the old `start` method, this method:
     /// - Does not create a new Tokio runtime.
     /// - Assumes it is called on a thread where a Tokio runtime is already
     ///   active.
@@ -1090,13 +1092,13 @@ impl Graph {
     /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///     let mut graph = build_graph_somehow();
     ///
-    ///     // Use `async_start` because we are already inside a Tokio runtime.
-    ///     graph.async_start().await?;
+    ///     // Use `start` because we are already inside a Tokio runtime.
+    ///     graph.start().await?;
     ///
     ///     Ok(())
     /// }
     /// ```
-    pub async fn async_start(&mut self) -> Result<(), GraphError> {
+    pub async fn start(&mut self) -> Result<(), GraphError> {
         self.init();
         let is_loop = self.check_loop_and_partition().await;
         if is_loop {
@@ -1201,7 +1203,9 @@ impl Graph {
                 let hooks = self.hooks.clone();
                 let event_sender = self.event_sender.clone();
 
-                let task = task::spawn({
+                let scheduling_mode = node.lock().await.scheduling_mode();
+
+                let task_future = {
                     let errors = Arc::clone(&errors);
                     async move {
                         let node_ref: Arc<Mutex<dyn Node>> = node.clone();
@@ -1395,7 +1399,7 @@ impl Graph {
                             Err(_) => {
                                 let mut node_guard: tokio::sync::MutexGuard<dyn Node> =
                                     node_ref.lock().await;
-                                node_guard.input_channels().close_all();
+                                node_guard.input_channels().close_all().await;
                                 node_guard.output_channels().close_all();
 
                                 error!("Execution panic [name: {}, id: {}]", node_name, id_val,);
@@ -1425,7 +1429,14 @@ impl Graph {
                             }
                         }
                     }
-                });
+                };
+
+                let task = match scheduling_mode {
+                    SchedulingMode::Async => task::spawn(task_future),
+                    SchedulingMode::Blocking => task::spawn_blocking(move || {
+                        tokio::runtime::Handle::current().block_on(task_future)
+                    }),
+                };
                 tasks.push(task);
             }
 
@@ -1773,8 +1784,8 @@ mod tests {
     ///
     /// Step 4: Run the graph and verify the output saved in the graph structure.
 
-    #[test]
-    fn test_graph_execution() {
+    #[tokio::test]
+    async fn test_graph_execution() {
         let mut graph = Graph::new();
         let mut node_table = NodeTable::new();
 
@@ -1790,12 +1801,12 @@ mod tests {
         );
         let node1_id = node1.id();
 
-        graph.add_node(node);
-        graph.add_node(node1);
+        graph.add_node(node).await;
+        graph.add_node(node1).await;
 
-        graph.add_edge(node_id, vec![node1_id]);
+        graph.add_edge(node_id, vec![node1_id]).await;
 
-        match graph.start() {
+        match graph.start().await {
             Ok(_) => {
                 let out = graph.execute_states[&node1_id].get_output().unwrap();
                 let out: &String = out.get().unwrap();
@@ -1827,8 +1838,8 @@ mod tests {
     /// Step 3: Add nodes to graph and set up dependencies between them.
     ///
     /// Step 4: Run the graph and verify the conditional node fails as expected.
-    #[test]
-    fn test_conditional_execution() {
+    #[tokio::test]
+    async fn test_conditional_execution() {
         let mut graph = Graph::new();
         let mut node_table = NodeTable::new();
 
@@ -1851,14 +1862,14 @@ mod tests {
         let node_b_id = node_b.id();
 
         // Add nodes to graph
-        graph.add_node(node_a);
-        graph.add_node(node_b);
+        graph.add_node(node_a).await;
+        graph.add_node(node_b).await;
 
         // Add edge from A to B
-        graph.add_edge(node_a_id, vec![node_b_id]);
+        graph.add_edge(node_a_id, vec![node_b_id]).await;
 
         // Execute graph
-        match graph.start() {
+        match graph.start().await {
             Ok(_) => {
                 // Node A should have failed
                 assert!(graph.execute_states[&node_a_id].get_output().is_none());
