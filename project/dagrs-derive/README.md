@@ -41,6 +41,8 @@ Dagrs leverages cutting-edge technologies to ensure functionality and performanc
 - **[tokio](https://crates.io/crates/tokio)** - An event-driven, non-blocking I/O platform for writing asynchronous I/O backed applications.
 - **[async_trait](https://crates.io/crates/async-trait)** - Type erasure for async trait methods.
 
+> Note: `dependencies!` expands to async graph construction. Call it inside an async context (e.g., `#[tokio::main]`) because it awaits `graph.add_node` / `graph.add_edge`.
+
 
 ## Contribution
 
