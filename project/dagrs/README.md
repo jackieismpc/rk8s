@@ -41,6 +41,25 @@ Dagrs leverages cutting-edge technologies to ensure functionality and performanc
 - **[tokio](https://crates.io/crates/tokio)** - An event-driven, non-blocking I/O platform for writing asynchronous I/O backed applications.
 - **[async_trait](https://crates.io/crates/async-trait)** - Type erasure for async trait methods.
 
+## Usage
+
+Dagrs uses **synchronous graph construction** via `GraphBuilder`, and **asynchronous execution** via `Graph::start().await`.
+
+```rust
+use dagrs::{GraphBuilder, EnvVar, NodeTable};
+
+let mut builder = GraphBuilder::new();
+// builder.add_node(...)?;
+// builder.add_edge(...)?;
+
+let mut env = EnvVar::new(NodeTable::default());
+env.set("key", "value".to_string());
+builder.set_env(env);
+
+let mut graph = builder.build()?;
+graph.start().await?;
+```
+
 
 ## Advanced Features
 
@@ -75,8 +94,9 @@ For example, in the [dagrs-sklearn](examples/dagrs-sklearn) example project, we 
 ```rust
 pub struct YamlParser;
 
+#[async_trait]
 impl Parser for YamlParser {
-    fn parse_tasks(
+    async fn parse_tasks(
         &self,
         file: &str,
         specific_actions: HashMap<String, Box<dyn Action>>,
@@ -111,6 +131,7 @@ For more detailed info about this example, please see the [notebook.ipynb](examp
 #### 🚀 New Features
 
 - **Async Execution Interface**: `Graph::start()` is now async and must be awaited when running inside a Tokio runtime. The library no longer creates its own runtime.
+- **Synchronous Graph Construction**: `GraphBuilder` provides a synchronous API for adding nodes/edges and validation.
 
 #### 💡 Usage Recommendations
 
