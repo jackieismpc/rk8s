@@ -1,10 +1,11 @@
 //! Task configuration file parser interface
 use std::collections::HashMap;
 
-use dagrs::{Action, EnvVar, Graph};
+use dagrs::{Action, EnvVar, Graph, async_trait};
 
 /// Generic parser traits. If users want to customize the configuration file parser, they must implement this trait.
 /// The yaml module's `YamlParser` is an example.
+#[async_trait]
 pub trait Parser {
     /// Parses the contents of a configuration file into a series of tasks with dependencies.
     /// Parameter Description:
@@ -20,13 +21,13 @@ pub trait Parser {
     /// Instead, return a series of concrete types that implement the [`Task`] trait.
     /// This may involve user-defined [`Task`], you can refer to `YamlTask` under the yaml module.
     #[allow(unused)]
-    fn parse_tasks(
+    async fn parse_tasks(
         &self,
         file: &str,
         specific_actions: HashMap<String, Box<dyn Action>>,
     ) -> Result<(Graph, EnvVar), ParseError>;
 
-    fn parse_tasks_from_str(
+    async fn parse_tasks_from_str(
         &self,
         content: &str,
         specific_actions: HashMap<String, Box<dyn Action>>,

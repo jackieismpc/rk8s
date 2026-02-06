@@ -56,8 +56,8 @@ impl Router for FirstBranchRouter {
     }
 }
 
-#[test]
-fn test_event_node_start_and_success() {
+#[tokio::test]
+async fn test_event_node_start_and_success() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -66,41 +66,38 @@ fn test_event_node_start_and_success() {
 
     let node = DefaultNode::with_action("TestNode".to_string(), NoOpAction, &mut table);
     let node_id = node.id();
-    graph.add_node(node);
+    graph.add_node(node).await;
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        // Spawn a task to collect events
-        let collector = tokio::spawn(async move {
-            let mut collected = Vec::new();
-            loop {
-                match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
-                    Ok(Ok(event)) => {
-                        let is_finished = matches!(event, GraphEvent::GraphFinished);
-                        collected.push(event);
-                        if is_finished {
-                            break;
-                        }
+    // Spawn a task to collect events
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                Ok(Ok(event)) => {
+                    let is_finished = matches!(event, GraphEvent::GraphFinished);
+                    collected.push(event);
+                    if is_finished {
+                        break;
                     }
-                    Ok(Err(_)) => break, // Channel closed
-                    Err(_) => break,     // Timeout
                 }
+                Ok(Err(_)) => break, // Channel closed
+                Err(_) => break,     // Timeout
             }
-            collected
-        });
-
-        // Run the graph
-        graph.async_start().await.expect("Graph should succeed");
-
-        // Wait for events to be collected
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let collected = collector.await.unwrap();
-        *events_clone.lock().unwrap() = collected;
+        }
+        collected
     });
+
+    // Run the graph
+    graph.start().await.expect("Graph should succeed");
+
+    // Wait for events to be collected
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let collected = collector.await.unwrap();
+    *events_clone.lock().unwrap() = collected;
 
     let events_list = events.lock().unwrap();
 
@@ -123,8 +120,8 @@ fn test_event_node_start_and_success() {
     assert!(has_finished, "Should have GraphFinished event");
 }
 
-#[test]
-fn test_event_node_failed() {
+#[tokio::test]
+async fn test_event_node_failed() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -132,39 +129,36 @@ fn test_event_node_failed() {
 
     let node = DefaultNode::with_action("FailingNode".to_string(), FailingAction, &mut table);
     let node_id = node.id();
-    graph.add_node(node);
+    graph.add_node(node).await;
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let collector = tokio::spawn(async move {
-            let mut collected = Vec::new();
-            loop {
-                match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
-                    Ok(Ok(event)) => {
-                        collected.push(event.clone());
-                        if matches!(event, GraphEvent::GraphFinished) {
-                            break;
-                        }
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                Ok(Ok(event)) => {
+                    collected.push(event.clone());
+                    if matches!(event, GraphEvent::GraphFinished) {
+                        break;
                     }
-                    Ok(Err(_)) => break,
-                    Err(_) => break,
                 }
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
-            collected
-        });
-
-        // Graph should fail
-        let result = graph.async_start().await;
-        assert!(result.is_err(), "Graph should fail");
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let collected = collector.await.unwrap();
-        *events_clone.lock().unwrap() = collected;
+        }
+        collected
     });
+
+    // Graph should fail
+    let result = graph.start().await;
+    assert!(result.is_err(), "Graph should fail");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let collected = collector.await.unwrap();
+    *events_clone.lock().unwrap() = collected;
 
     let events_list = events.lock().unwrap();
 
@@ -180,8 +174,9 @@ fn test_event_node_failed() {
     );
 }
 
-#[test]
-fn test_event_node_skipped() {
+#[tokio::test]
+async fn test_event_node_skipped() {
+    // Test that on_skip is called when a node is pruned by a router
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -204,42 +199,39 @@ fn test_event_node_skipped() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
+    graph.add_node(router).await;
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
 
-    graph.add_edge(id_router, vec![id_a, id_b]);
+    graph.add_edge(id_router, vec![id_a, id_b]).await;
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let collector = tokio::spawn(async move {
-            let mut collected = Vec::new();
-            loop {
-                match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
-                    Ok(Ok(event)) => {
-                        let is_finished = matches!(event, GraphEvent::GraphFinished);
-                        collected.push(event);
-                        if is_finished {
-                            break;
-                        }
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                Ok(Ok(event)) => {
+                    let is_finished = matches!(event, GraphEvent::GraphFinished);
+                    collected.push(event);
+                    if is_finished {
+                        break;
                     }
-                    Ok(Err(_)) => break,
-                    Err(_) => break,
                 }
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
-            collected
-        });
-
-        graph.async_start().await.expect("Graph should succeed");
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let collected = collector.await.unwrap();
-        *events_clone.lock().unwrap() = collected;
+        }
+        collected
     });
+
+    graph.start().await.expect("Graph should succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let collected = collector.await.unwrap();
+    *events_clone.lock().unwrap() = collected;
 
     let events_list = events.lock().unwrap();
 
@@ -254,8 +246,8 @@ fn test_event_node_skipped() {
     );
 }
 
-#[test]
-fn test_event_loop_execution() {
+#[tokio::test]
+async fn test_event_loop_execution() {
     // This test verifies that loops execute correctly and events are properly broadcast.
     // The loop topology: A -> LoopNode (loops 2 times)
     // Expected behavior: A executes 3 times (initial + 2 iterations)
@@ -280,41 +272,38 @@ fn test_event_loop_execution() {
     );
     let _id_loop = loop_node.id();
 
-    graph.add_node(node_a);
-    graph.add_node(loop_node);
+    graph.add_node(node_a).await;
+    graph.add_node(loop_node).await;
 
-    graph.add_edge(id_a, vec![_id_loop]);
+    graph.add_edge(id_a, vec![_id_loop]).await;
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let collector = tokio::spawn(async move {
-            let mut collected = Vec::new();
-            loop {
-                match tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await {
-                    Ok(Ok(event)) => {
-                        let is_finished = matches!(event, GraphEvent::GraphFinished);
-                        collected.push(event);
-                        if is_finished {
-                            break;
-                        }
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(200), receiver.recv()).await {
+                Ok(Ok(event)) => {
+                    let is_finished = matches!(event, GraphEvent::GraphFinished);
+                    collected.push(event);
+                    if is_finished {
+                        break;
                     }
-                    Ok(Err(_)) => break,
-                    Err(_) => break,
                 }
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
-            collected
-        });
-
-        graph.async_start().await.expect("Graph should succeed");
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let collected = collector.await.unwrap();
-        *events_clone.lock().unwrap() = collected;
+        }
+        collected
     });
+
+    graph.start().await.expect("Graph should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let collected = collector.await.unwrap();
+    *events_clone.lock().unwrap() = collected;
 
     let events_list = events.lock().unwrap();
 
@@ -340,8 +329,8 @@ fn test_event_loop_execution() {
     assert!(has_finished, "Should have GraphFinished event");
 }
 
-#[test]
-fn test_event_branch_selected() {
+#[tokio::test]
+async fn test_event_branch_selected() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -364,42 +353,39 @@ fn test_event_branch_selected() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
+    graph.add_node(router).await;
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
 
-    graph.add_edge(id_router, vec![id_a, id_b]);
+    graph.add_edge(id_router, vec![id_a, id_b]).await;
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let collector = tokio::spawn(async move {
-            let mut collected = Vec::new();
-            loop {
-                match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
-                    Ok(Ok(event)) => {
-                        let is_finished = matches!(event, GraphEvent::GraphFinished);
-                        collected.push(event);
-                        if is_finished {
-                            break;
-                        }
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                Ok(Ok(event)) => {
+                    let is_finished = matches!(event, GraphEvent::GraphFinished);
+                    collected.push(event);
+                    if is_finished {
+                        break;
                     }
-                    Ok(Err(_)) => break,
-                    Err(_) => break,
                 }
+                Ok(Err(_)) => break,
+                Err(_) => break,
             }
-            collected
-        });
-
-        graph.async_start().await.expect("Graph should succeed");
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let collected = collector.await.unwrap();
-        *events_clone.lock().unwrap() = collected;
+        }
+        collected
     });
+
+    graph.start().await.expect("Graph should succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let collected = collector.await.unwrap();
+    *events_clone.lock().unwrap() = collected;
 
     let events_list = events.lock().unwrap();
 

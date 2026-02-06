@@ -53,7 +53,8 @@ impl MessageNode {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // create an empty `NodeTable`
     let mut node_table = NodeTable::new();
     // create a `MessageNode`
@@ -62,8 +63,8 @@ fn main() {
 
     // create a graph with this node and run
     let mut graph = Graph::new();
-    graph.add_node(node);
-    match graph.start() {
+    graph.add_node(node).await;
+    match graph.start().await {
         Ok(_) => {
             // verify the output of this node
             let outputs = graph.get_outputs();

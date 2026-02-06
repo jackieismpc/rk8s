@@ -100,8 +100,8 @@ impl Router for SelectARouter {
     }
 }
 
-#[test]
-fn test_hook_before_and_after() {
+#[tokio::test]
+async fn test_hook_before_and_after() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -116,23 +116,18 @@ fn test_hook_before_and_after() {
         retries: Arc::new(Mutex::new(Vec::new())),
     };
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.add_hook(Box::new(hook)).await;
-    });
+    graph.add_hook(Box::new(hook)).await;
 
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
     let node_b = DefaultNode::with_action("NodeB".to_string(), NoOpAction, &mut table);
     let id_a = node_a.id();
     let id_b = node_b.id();
 
-    graph.add_node(node_a);
-    graph.add_node(node_b);
-    graph.add_edge(id_a, vec![id_b]);
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
+    graph.add_edge(id_a, vec![id_b]).await;
 
-    rt.block_on(async {
-        graph.async_start().await.expect("Graph should succeed");
-    });
+    graph.start().await.expect("Graph should succeed");
 
     let before = before_runs.lock().unwrap();
     let after = after_runs.lock().unwrap();
@@ -146,8 +141,8 @@ fn test_hook_before_and_after() {
     assert!(after.contains(&"NodeB".to_string()));
 }
 
-#[test]
-fn test_hook_on_error() {
+#[tokio::test]
+async fn test_hook_on_error() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -161,10 +156,7 @@ fn test_hook_on_error() {
         retries: Arc::new(Mutex::new(Vec::new())),
     };
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.add_hook(Box::new(hook)).await;
-    });
+    graph.add_hook(Box::new(hook)).await;
 
     let failing_node = DefaultNode::with_action(
         "FailingNode".to_string(),
@@ -174,12 +166,10 @@ fn test_hook_on_error() {
         &mut table,
     );
 
-    graph.add_node(failing_node);
+    graph.add_node(failing_node).await;
 
-    rt.block_on(async {
-        let result = graph.async_start().await;
-        assert!(result.is_err(), "Graph should fail due to node error");
-    });
+    let result = graph.start().await;
+    assert!(result.is_err(), "Graph should fail due to node error");
 
     let errors_list = errors.lock().unwrap();
     assert_eq!(errors_list.len(), 1, "on_error should be called once");
@@ -189,8 +179,8 @@ fn test_hook_on_error() {
     );
 }
 
-#[test]
-fn test_hook_on_skip() {
+#[tokio::test]
+async fn test_hook_on_skip() {
     // Test that on_skip is called when a node is pruned by a router
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
@@ -205,10 +195,7 @@ fn test_hook_on_skip() {
         retries: Arc::new(Mutex::new(Vec::new())),
     };
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.add_hook(Box::new(hook)).await;
-    });
+    graph.add_hook(Box::new(hook)).await;
 
     // Create nodes
     let node_a = DefaultNode::with_action("NodeA".to_string(), NoOpAction, &mut table);
@@ -227,16 +214,14 @@ fn test_hook_on_skip() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
+    graph.add_node(router).await;
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
 
     // Router -> A, Router -> B
-    graph.add_edge(id_router, vec![id_a, id_b]);
+    graph.add_edge(id_router, vec![id_a, id_b]).await;
 
-    rt.block_on(async {
-        graph.async_start().await.expect("Graph should succeed");
-    });
+    graph.start().await.expect("Graph should succeed");
 
     let skips_list = skips.lock().unwrap();
     // NodeB should be skipped because the router only selected NodeA
@@ -326,8 +311,8 @@ impl Node for RetryableNode {
     }
 }
 
-#[test]
-fn test_automatic_retry_success() {
+#[tokio::test]
+async fn test_automatic_retry_success() {
     use dagrs::graph::event::GraphEvent;
 
     let mut graph = Graph::new();
@@ -344,50 +329,44 @@ fn test_automatic_retry_success() {
     );
 
     let mut receiver = graph.subscribe();
-    graph.add_node(node);
+    graph.add_node(node).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async {
-        // Collect events
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let events_clone = events.clone();
+    // Collect events
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
 
-        let collector = tokio::spawn(async move {
-            let mut collected = Vec::new();
-            loop {
-                match tokio::time::timeout(std::time::Duration::from_millis(500), receiver.recv())
-                    .await
-                {
-                    Ok(Ok(event)) => {
-                        let is_finished = matches!(event, GraphEvent::GraphFinished);
-                        collected.push(event);
-                        if is_finished {
-                            break;
-                        }
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(500), receiver.recv()).await
+            {
+                Ok(Ok(event)) => {
+                    let is_finished = matches!(event, GraphEvent::GraphFinished);
+                    collected.push(event);
+                    if is_finished {
+                        break;
                     }
-                    _ => break,
                 }
+                _ => break,
             }
-            collected
-        });
-
-        let result = graph.async_start().await;
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let collected = collector.await.unwrap();
-        *events_clone.lock().unwrap() = collected;
-
-        (result, events)
+        }
+        collected
     });
 
+    let result = graph.start().await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let collected = collector.await.unwrap();
+    *events_clone.lock().unwrap() = collected;
+
     // Should succeed after retries
-    assert!(result.0.is_ok(), "Graph should succeed after retries");
+    assert!(result.is_ok(), "Graph should succeed after retries");
 
     // Should have tried 3 times total (1 initial + 2 retries)
     assert_eq!(*fail_count.lock().unwrap(), 3);
 
     // Check for retry events
-    let events = result.1.lock().unwrap();
+    let events = events.lock().unwrap();
     let retry_count = events
         .iter()
         .filter(|e| matches!(e, GraphEvent::NodeRetry { .. }))
@@ -395,8 +374,8 @@ fn test_automatic_retry_success() {
     assert_eq!(retry_count, 2, "Should have 2 retry events");
 }
 
-#[test]
-fn test_automatic_retry_exhausted() {
+#[tokio::test]
+async fn test_automatic_retry_exhausted() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
     let fail_count = Arc::new(Mutex::new(0));
@@ -413,10 +392,9 @@ fn test_automatic_retry_exhausted() {
     // Verify max_retries is set correctly
     println!("Node max_retries: {}", node.max_retries());
 
-    graph.add_node(node);
+    graph.add_node(node).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async { graph.async_start().await });
+    let result = graph.start().await;
 
     // Should fail after exhausting retries
     assert!(

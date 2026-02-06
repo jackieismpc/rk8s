@@ -6,7 +6,7 @@ use crate::{
     parser::ParseError,
     utils::{file::load_file, parser::Parser},
 };
-use dagrs::{Action, EnvVar, Graph, Node, NodeId, NodeTable};
+use dagrs::{Action, EnvVar, Graph, Node, NodeId, NodeTable, async_trait};
 use std::collections::HashMap;
 use yaml_rust::{Yaml, YamlLoader};
 
@@ -65,17 +65,18 @@ impl YamlParser {
     }
 }
 
+#[async_trait]
 impl Parser for YamlParser {
-    fn parse_tasks(
+    async fn parse_tasks(
         &self,
         file: &str,
         specific_actions: HashMap<String, Box<dyn Action>>,
     ) -> Result<(Graph, EnvVar), ParseError> {
         let content = load_file(file).map_err(|e| ParseError(e.to_string()))?;
-        self.parse_tasks_from_str(&content, specific_actions)
+        self.parse_tasks_from_str(&content, specific_actions).await
     }
 
-    fn parse_tasks_from_str(
+    async fn parse_tasks_from_str(
         &self,
         content: &str,
         mut specific_actions: HashMap<String, Box<dyn Action>>,
@@ -128,10 +129,12 @@ impl Parser for YamlParser {
             task.init_precursors(pres.clone());
         }
 
-        tasks.into_iter().for_each(|task| dag.add_node(task));
-        edges.into_iter().for_each(|(x, ys)| {
-            dag.add_edge(x, ys);
-        });
+        for task in tasks {
+            dag.add_node(task).await;
+        }
+        for (x, ys) in edges {
+            dag.add_edge(x, ys).await;
+        }
 
         let env_var = EnvVar::new(node_table);
         dag.set_env(env_var.clone());

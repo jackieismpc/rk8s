@@ -22,8 +22,8 @@ impl Action for CounterAction {
     }
 }
 
-#[test]
-fn test_loop_node() {
+#[tokio::test]
+async fn test_loop_node() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -43,19 +43,16 @@ fn test_loop_node() {
     );
     let id_loop = loop_node.id();
 
-    graph.add_node(node_a);
-    graph.add_node(loop_node);
+    graph.add_node(node_a).await;
+    graph.add_node(loop_node).await;
 
     // A -> Loop
-    graph.add_edge(id_a, vec![id_loop]);
+    graph.add_edge(id_a, vec![id_loop]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        match graph.async_start().await {
-            Ok(_) => {}
-            Err(e) => panic!("Graph failed: {:?}", e),
-        }
-    });
+    match graph.start().await {
+        Ok(_) => {}
+        Err(e) => panic!("Graph failed: {:?}", e),
+    }
 
     // A runs. Loop runs (iter 0 -> 1, true). Jumps to A.
     // A runs. Loop runs (iter 1 -> 2, true). Jumps to A.
@@ -76,8 +73,8 @@ impl Router for SimpleRouter {
     }
 }
 
-#[test]
-fn test_router_node() {
+#[tokio::test]
+async fn test_router_node() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -111,20 +108,17 @@ fn test_router_node() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_b);
-    graph.add_node(node_c);
+    graph.add_node(router).await;
+    graph.add_node(node_b).await;
+    graph.add_node(node_c).await;
 
     // Router -> B, Router -> C
-    graph.add_edge(id_router, vec![id_b, id_c]);
+    graph.add_edge(id_router, vec![id_b, id_c]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        match graph.async_start().await {
-            Ok(_) => {}
-            Err(e) => panic!("Graph failed: {:?}", e),
-        }
-    });
+    match graph.start().await {
+        Ok(_) => {}
+        Err(e) => panic!("Graph failed: {:?}", e),
+    }
 
     assert_eq!(*count_b.lock().unwrap(), 1);
     assert_eq!(*count_c.lock().unwrap(), 0);

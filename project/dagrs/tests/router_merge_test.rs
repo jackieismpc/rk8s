@@ -33,8 +33,8 @@ impl Router for SimpleRouter {
     }
 }
 
-#[test]
-fn test_router_merge() {
+#[tokio::test]
+async fn test_router_merge() {
     // A -> Router -> B
     //             -> C
     // B -> D
@@ -85,22 +85,19 @@ fn test_router_merge() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_b);
-    graph.add_node(node_c);
-    graph.add_node(node_d);
+    graph.add_node(router).await;
+    graph.add_node(node_b).await;
+    graph.add_node(node_c).await;
+    graph.add_node(node_d).await;
 
-    graph.add_edge(id_router, vec![id_b, id_c]);
-    graph.add_edge(id_b, vec![id_d]);
-    graph.add_edge(id_c, vec![id_d]);
+    graph.add_edge(id_router, vec![id_b, id_c]).await;
+    graph.add_edge(id_b, vec![id_d]).await;
+    graph.add_edge(id_c, vec![id_d]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        match graph.async_start().await {
-            Ok(_) => {}
-            Err(e) => panic!("Graph failed: {:?}", e),
-        }
-    });
+    match graph.start().await {
+        Ok(_) => {}
+        Err(e) => panic!("Graph failed: {:?}", e),
+    }
 
     assert!(*exec_b.lock().unwrap(), "B should run");
     assert!(!*exec_c.lock().unwrap(), "C should not run");

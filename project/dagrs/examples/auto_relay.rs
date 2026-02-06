@@ -19,9 +19,9 @@ impl MyNode {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut node_table = NodeTable::default();
-
     let node_name = "auto_node";
 
     let s = MyNode::new(node_name, &mut node_table);
@@ -33,5 +33,5 @@ fn main() {
         b -> a
     );
 
-    g.start().unwrap();
+    g.start().await.unwrap();
 }

@@ -48,8 +48,8 @@ impl Router for SwitchRouter {
     }
 }
 
-#[test]
-fn test_router_reuse() {
+#[tokio::test]
+async fn test_router_reuse() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -84,9 +84,9 @@ fn test_router_reuse() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
+    graph.add_node(router).await;
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
 
     // Add Node C downstream of B
     let exec_c = Arc::new(Mutex::new(false));
@@ -98,26 +98,21 @@ fn test_router_reuse() {
         &mut table,
     );
     let id_c = node_c.id();
-    graph.add_node(node_c);
+    graph.add_node(node_c).await;
 
-    graph.add_edge(id_router, vec![id_a, id_b]);
-    graph.add_edge(id_b, vec![id_c]);
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    graph.add_edge(id_router, vec![id_a, id_b]).await;
+    graph.add_edge(id_b, vec![id_c]).await;
 
     // First Run: Target A
     println!("First Run: Expect A to run");
-    rt.block_on(async {
-        graph.async_start().await.unwrap();
-    });
+    graph.start().await.unwrap();
+
     assert!(*exec_a.lock().unwrap());
     assert!(!*exec_b.lock().unwrap());
     assert!(!*exec_c.lock().unwrap());
 
     // Reset
-    rt.block_on(async {
-        graph.reset().await;
-    });
+    graph.reset().await;
     *exec_a.lock().unwrap() = false;
     *exec_b.lock().unwrap() = false;
     *exec_c.lock().unwrap() = false;
@@ -126,12 +121,10 @@ fn test_router_reuse() {
 
     // Second Run: Target B -> C
     println!("Second Run: Expect B and C to run");
-    rt.block_on(async {
-        match graph.async_start().await {
-            Ok(_) => {}
-            Err(e) => panic!("Second run failed: {:?}", e),
-        }
-    });
+    match graph.start().await {
+        Ok(_) => {}
+        Err(e) => panic!("Second run failed: {:?}", e),
+    }
 
     assert!(!*exec_a.lock().unwrap());
     assert!(*exec_b.lock().unwrap());

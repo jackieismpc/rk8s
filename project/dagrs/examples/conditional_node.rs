@@ -78,7 +78,8 @@ impl Condition for VerifyGT {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Initialization log.
     unsafe {
         env::set_var("RUST_LOG", "debug");
@@ -117,19 +118,19 @@ fn main() {
 
     // Create a graph.
     let mut graph = Graph::new();
-    vec![a, b, c, d, e, f, g]
-        .into_iter()
-        .for_each(|node| graph.add_node(node));
-    graph.add_node(x);
+    for node in vec![a, b, c, d, e, f, g] {
+        graph.add_node(node).await;
+    }
+    graph.add_node(x).await;
 
     // Set up task dependencies.
-    graph.add_edge(a_id, vec![b_id, c_id, d_id]);
-    graph.add_edge(b_id, vec![e_id, x_id]);
-    graph.add_edge(c_id, vec![e_id, f_id]);
-    graph.add_edge(d_id, vec![f_id]);
-    graph.add_edge(e_id, vec![x_id]);
-    graph.add_edge(x_id, vec![g_id]);
-    graph.add_edge(f_id, vec![g_id]);
+    graph.add_edge(a_id, vec![b_id, c_id, d_id]).await;
+    graph.add_edge(b_id, vec![e_id, x_id]).await;
+    graph.add_edge(c_id, vec![e_id, f_id]).await;
+    graph.add_edge(d_id, vec![f_id]).await;
+    graph.add_edge(e_id, vec![x_id]).await;
+    graph.add_edge(x_id, vec![g_id]).await;
+    graph.add_edge(f_id, vec![g_id]).await;
 
     // Set a global environment variable for this dag.
     let mut env = EnvVar::new(node_table);
@@ -137,7 +138,7 @@ fn main() {
     graph.set_env(env);
 
     // Start executing this dag.
-    match graph.start() {
+    match graph.start().await {
         Ok(_) => {
             // Since node X's condition (VerifyGT(128)) is not met,
             // execution stops at node X and never reaches node G.

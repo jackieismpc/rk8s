@@ -99,8 +99,8 @@ impl TypedAction for ConsumerAction {
     }
 }
 
-#[test]
-fn test_typed_channel_chain() {
+#[tokio::test]
+async fn test_typed_channel_chain() {
     // Test topology: Producer -> Double -> Consumer
     // Producer outputs 5, Double doubles it to 10, Consumer receives 10
 
@@ -123,17 +123,14 @@ fn test_typed_channel_chain() {
     );
     let consumer_id = consumer.id();
 
-    graph.add_node(producer);
-    graph.add_node(double);
-    graph.add_node(consumer);
+    graph.add_node(producer).await;
+    graph.add_node(double).await;
+    graph.add_node(consumer).await;
 
-    graph.add_edge(producer_id, vec![double_id]);
-    graph.add_edge(double_id, vec![consumer_id]);
+    graph.add_edge(producer_id, vec![double_id]).await;
+    graph.add_edge(double_id, vec![consumer_id]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.async_start().await.expect("Graph execution failed");
-    });
+    graph.start().await.expect("Graph execution failed");
 
     // Verify the result: 5 * 2 = 10
     assert_eq!(*received.lock().unwrap(), Some(10));
@@ -188,8 +185,8 @@ impl TypedAction for StringConsumer {
     }
 }
 
-#[test]
-fn test_typed_channel_with_string() {
+#[tokio::test]
+async fn test_typed_channel_with_string() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -210,15 +207,12 @@ fn test_typed_channel_with_string() {
     );
     let consumer_id = consumer.id();
 
-    graph.add_node(producer);
-    graph.add_node(consumer);
+    graph.add_node(producer).await;
+    graph.add_node(consumer).await;
 
-    graph.add_edge(producer_id, vec![consumer_id]);
+    graph.add_edge(producer_id, vec![consumer_id]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.async_start().await.expect("Graph execution failed");
-    });
+    graph.start().await.expect("Graph execution failed");
 
     assert_eq!(
         *received.lock().unwrap(),
@@ -227,8 +221,8 @@ fn test_typed_channel_with_string() {
 }
 
 /// Test multiple inputs with typed channels.
-#[test]
-fn test_typed_channel_multiple_inputs() {
+#[tokio::test]
+async fn test_typed_channel_multiple_inputs() {
     // Topology:
     // Producer1 (3) -\
     //                 -> Adder -> Consumer
@@ -260,19 +254,16 @@ fn test_typed_channel_multiple_inputs() {
     );
     let consumer_id = consumer.id();
 
-    graph.add_node(producer1);
-    graph.add_node(producer2);
-    graph.add_node(adder);
-    graph.add_node(consumer);
+    graph.add_node(producer1).await;
+    graph.add_node(producer2).await;
+    graph.add_node(adder).await;
+    graph.add_node(consumer).await;
 
-    graph.add_edge(producer1_id, vec![adder_id]);
-    graph.add_edge(producer2_id, vec![adder_id]);
-    graph.add_edge(adder_id, vec![consumer_id]);
+    graph.add_edge(producer1_id, vec![adder_id]).await;
+    graph.add_edge(producer2_id, vec![adder_id]).await;
+    graph.add_edge(adder_id, vec![consumer_id]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.async_start().await.expect("Graph execution failed");
-    });
+    graph.start().await.expect("Graph execution failed");
 
     // (3 + 7) * 2 = 20
     assert_eq!(*received.lock().unwrap(), Some(20));

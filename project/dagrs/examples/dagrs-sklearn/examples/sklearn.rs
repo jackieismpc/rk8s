@@ -86,71 +86,78 @@ impl Action for RootAction {
 }
 
 fn main() {
-    env_logger::init();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            env_logger::init();
 
-    let specific_actions: HashMap<String, Box<dyn Action>> = HashMap::from([
-        (
-            "node0".to_string(),
-            Box::new(NodeAction::new(0)) as Box<dyn Action>,
-        ),
-        (
-            "node1".to_string(),
-            Box::new(NodeAction::new(1)) as Box<dyn Action>,
-        ),
-        (
-            "node2".to_string(),
-            Box::new(NodeAction::new(2)) as Box<dyn Action>,
-        ),
-        (
-            "node3".to_string(),
-            Box::new(NodeAction::new(3)) as Box<dyn Action>,
-        ),
-        (
-            "node4".to_string(),
-            Box::new(NodeAction::new(4)) as Box<dyn Action>,
-        ),
-        (
-            "node5".to_string(),
-            Box::new(NodeAction::new(5)) as Box<dyn Action>,
-        ),
-        (
-            "node6".to_string(),
-            Box::new(NodeAction::new(6)) as Box<dyn Action>,
-        ),
-        (
-            "node7".to_string(),
-            Box::new(NodeAction::new(7)) as Box<dyn Action>,
-        ),
-        (
-            "node8".to_string(),
-            Box::new(NodeAction::new(8)) as Box<dyn Action>,
-        ),
-        (
-            "node9".to_string(),
-            Box::new(NodeAction::new(9)) as Box<dyn Action>,
-        ),
-        ("root".to_string(), Box::new(RootAction) as Box<dyn Action>),
-    ]);
+            let specific_actions: HashMap<String, Box<dyn Action>> = HashMap::from([
+                (
+                    "node0".to_string(),
+                    Box::new(NodeAction::new(0)) as Box<dyn Action>,
+                ),
+                (
+                    "node1".to_string(),
+                    Box::new(NodeAction::new(1)) as Box<dyn Action>,
+                ),
+                (
+                    "node2".to_string(),
+                    Box::new(NodeAction::new(2)) as Box<dyn Action>,
+                ),
+                (
+                    "node3".to_string(),
+                    Box::new(NodeAction::new(3)) as Box<dyn Action>,
+                ),
+                (
+                    "node4".to_string(),
+                    Box::new(NodeAction::new(4)) as Box<dyn Action>,
+                ),
+                (
+                    "node5".to_string(),
+                    Box::new(NodeAction::new(5)) as Box<dyn Action>,
+                ),
+                (
+                    "node6".to_string(),
+                    Box::new(NodeAction::new(6)) as Box<dyn Action>,
+                ),
+                (
+                    "node7".to_string(),
+                    Box::new(NodeAction::new(7)) as Box<dyn Action>,
+                ),
+                (
+                    "node8".to_string(),
+                    Box::new(NodeAction::new(8)) as Box<dyn Action>,
+                ),
+                (
+                    "node9".to_string(),
+                    Box::new(NodeAction::new(9)) as Box<dyn Action>,
+                ),
+                ("root".to_string(), Box::new(RootAction) as Box<dyn Action>),
+            ]);
 
-    let (mut dag, mut env_var) = YamlParser
-        .parse_tasks("examples/config.yml", specific_actions)
-        .unwrap();
-    env_var.set(ENV_DATA_SRC, "examples/ex3data1.mat");
+            let (mut dag, mut env_var) = YamlParser
+                .parse_tasks("examples/config.yml", specific_actions)
+                .await
+                .unwrap();
+            env_var.set(ENV_DATA_SRC, "examples/ex3data1.mat");
 
-    let root_id = *env_var.get_node_id("root").unwrap();
-    dag.set_env(env_var);
-    dag.start().unwrap();
+            let root_id = *env_var.get_node_id("root").unwrap();
+            dag.set_env(env_var);
+            dag.start().await.unwrap();
 
-    let outputs = dag.get_outputs();
-    let result = outputs.get(&root_id).unwrap().get_out().unwrap();
-    let (stdout, _) = result.get::<(Vec<String>, Vec<String>)>().unwrap();
+            let outputs = dag.get_outputs();
+            let result = outputs.get(&root_id).unwrap().get_out().unwrap();
+            let (stdout, _) = result.get::<(Vec<String>, Vec<String>)>().unwrap();
 
-    let acc = if cfg!(target_os = "windows") {
-        stdout.get(1).unwrap()
-    } else {
-        stdout.get(0).unwrap()
-    };
-    assert_eq!("Accuracy: 94.46%", acc);
+            let acc = if cfg!(target_os = "windows") {
+                stdout.get(1).unwrap()
+            } else {
+                stdout.get(0).unwrap()
+            };
+            assert_eq!("Accuracy: 94.46%", acc);
 
-    println!("{}", acc)
+            println!("{}", acc)
+        })
 }

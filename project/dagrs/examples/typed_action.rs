@@ -61,7 +61,8 @@ impl TypedAction for Compute {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     let mut node_table = NodeTable::default();
@@ -89,22 +90,22 @@ fn main() {
     let g_id = g.id();
 
     let mut graph = Graph::new();
-    vec![a, b, c, d, e, f, g]
-        .into_iter()
-        .for_each(|node| graph.add_node(node));
+    for node in vec![a, b, c, d, e, f, g] {
+        graph.add_node(node).await;
+    }
 
-    graph.add_edge(a_id, vec![b_id, c_id, d_id]);
-    graph.add_edge(b_id, vec![e_id, g_id]);
-    graph.add_edge(c_id, vec![e_id, f_id]);
-    graph.add_edge(d_id, vec![f_id]);
-    graph.add_edge(e_id, vec![g_id]);
-    graph.add_edge(f_id, vec![g_id]);
+    graph.add_edge(a_id, vec![b_id, c_id, d_id]).await;
+    graph.add_edge(b_id, vec![e_id, g_id]).await;
+    graph.add_edge(c_id, vec![e_id, f_id]).await;
+    graph.add_edge(d_id, vec![f_id]).await;
+    graph.add_edge(e_id, vec![g_id]).await;
+    graph.add_edge(f_id, vec![g_id]).await;
 
     let mut env = EnvVar::new(node_table);
     env.set("base", 2usize);
     graph.set_env(env);
 
-    match graph.start() {
+    match graph.start().await {
         Ok(_) => {
             let res = graph
                 .get_results::<usize>()

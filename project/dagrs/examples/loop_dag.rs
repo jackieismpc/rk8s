@@ -50,7 +50,7 @@ impl Action for InterAction {
     ) -> Output {
         // Recv a start signal from the IN node.
         let content = in_channels.recv_from(&self.in_id).await.unwrap();
-        in_channels.close_async(&self.in_id).await;
+        in_channels.close(&self.in_id).await;
         log::info!("`Inter` Received start signal from IN node");
 
         let mut times = 0usize;
@@ -110,7 +110,8 @@ impl Action for ProcAction {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     unsafe {
         env::set_var("RUST_LOG", "info");
     }
@@ -143,16 +144,16 @@ fn main() {
 
     // Create graph and add nodes
     let mut graph = Graph::new();
-    graph.add_node(in_node);
-    graph.add_node(inter_proc);
+    graph.add_node(in_node).await;
+    graph.add_node(inter_proc).await;
 
     // Set up dependencies to create the loop
-    graph.add_edge(in_id, vec![inter_id]);
-    graph.add_edge(inter_id, vec![proc_id]);
-    graph.add_edge(proc_id, vec![inter_id]);
+    graph.add_edge(in_id, vec![inter_id]).await;
+    graph.add_edge(inter_id, vec![proc_id]).await;
+    graph.add_edge(proc_id, vec![inter_id]).await;
 
     // Execute graph
-    match graph.start() {
+    match graph.start().await {
         Ok(_) => println!("Graph executed successfully"),
         Err(e) => panic!("Graph execution failed: {:?}", e),
     }

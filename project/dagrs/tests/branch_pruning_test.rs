@@ -35,24 +35,17 @@ impl Router for StaticRouter {
     }
 }
 
-#[test]
-fn test_branch_pruning() {
+#[tokio::test]
+async fn test_branch_pruning() {
+    // A -> Router -> B -> C
+    //             -> D -> E
+    // Router selects B branch.
+    // Expect: A, Router, B, C executed.
+    // Expect: D, E skipped.
+
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
     let executed = Arc::new(Mutex::new(Vec::new()));
-
-    // Topology:
-    // Router -> A -> B
-    //        -> C -> D
-    //
-    // If Router chooses A, then C and D should NOT run.
-
-    let action_a = MarkAction {
-        name: "A".to_string(),
-        executed: executed.clone(),
-    };
-    let node_a = DefaultNode::with_action("A".to_string(), action_a, &mut table);
-    let id_a = node_a.id();
 
     let action_b = MarkAction {
         name: "B".to_string(),
@@ -75,7 +68,14 @@ fn test_branch_pruning() {
     let node_d = DefaultNode::with_action("D".to_string(), action_d, &mut table);
     let id_d = node_d.id();
 
-    let target = Arc::new(Mutex::new(id_a));
+    let action_e = MarkAction {
+        name: "E".to_string(),
+        executed: executed.clone(),
+    };
+    let node_e = DefaultNode::with_action("E".to_string(), action_e, &mut table);
+    let id_e = node_e.id();
+
+    let target = Arc::new(Mutex::new(id_b));
     let router = RouterNode::new(
         "Router".to_string(),
         StaticRouter {
@@ -85,37 +85,26 @@ fn test_branch_pruning() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
-    graph.add_node(node_c);
-    graph.add_node(node_d);
+    graph.add_node(router).await;
+    graph.add_node(node_b).await;
+    graph.add_node(node_c).await;
+    graph.add_node(node_d).await;
+    graph.add_node(node_e).await;
 
-    // Edges
-    graph.add_edge(id_router, vec![id_a, id_c]); // Router connects to A and C
-    graph.add_edge(id_a, vec![id_b]); // A -> B
-    graph.add_edge(id_c, vec![id_d]); // C -> D
+    graph.add_edge(id_router, vec![id_b, id_d]).await;
+    graph.add_edge(id_b, vec![id_c]).await;
+    graph.add_edge(id_d, vec![id_e]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.async_start().await.unwrap();
-    });
+    match graph.start().await {
+        Ok(_) => {}
+        Err(e) => panic!("Graph failed: {:?}", e),
+    }
 
     let exec_log = executed.lock().unwrap();
-    println!("Executed nodes: {:?}", *exec_log);
-
-    // Expect: A, B.
-    // Should NOT contain: C, D.
-    assert!(exec_log.contains(&"A".to_string()));
-    assert!(exec_log.contains(&"B".to_string()));
-    assert!(
-        !exec_log.contains(&"C".to_string()),
-        "Node C should be pruned"
-    );
-    assert!(
-        !exec_log.contains(&"D".to_string()),
-        "Node D should be pruned (descendant of C)"
-    );
+    assert!(exec_log.contains(&"B".to_string()), "B should run");
+    assert!(exec_log.contains(&"C".to_string()), "C should run");
+    assert!(!exec_log.contains(&"D".to_string()), "D should skip");
+    assert!(!exec_log.contains(&"E".to_string()), "E should skip");
 }
 
 /// Test case for diamond pattern where pruned node's descendant has another active parent.
@@ -136,8 +125,8 @@ fn test_branch_pruning() {
 ///
 /// This tests that the pruning logic correctly handles the case where a node
 /// has multiple parents and at least one parent remains active.
-#[test]
-fn test_branch_pruning_diamond_with_active_alternate_parent() {
+#[tokio::test]
+async fn test_branch_pruning_diamond_with_active_alternate_parent() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
     let executed = Arc::new(Mutex::new(Vec::new()));
@@ -190,27 +179,24 @@ fn test_branch_pruning_diamond_with_active_alternate_parent() {
     let id_router = router.id();
 
     // Add all nodes
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
-    graph.add_node(node_c);
-    graph.add_node(node_d);
-    graph.add_node(node_e);
+    graph.add_node(router).await;
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
+    graph.add_node(node_c).await;
+    graph.add_node(node_d).await;
+    graph.add_node(node_e).await;
 
     // Build topology:
     // Router -> A, C
     // A -> B
     // B -> D
     // E -> D (independent path to D)
-    graph.add_edge(id_router, vec![id_a, id_c]);
-    graph.add_edge(id_a, vec![id_b]);
-    graph.add_edge(id_b, vec![id_d]);
-    graph.add_edge(id_e, vec![id_d]); // E is an independent node that also connects to D
+    graph.add_edge(id_router, vec![id_a, id_c]).await;
+    graph.add_edge(id_a, vec![id_b]).await;
+    graph.add_edge(id_b, vec![id_d]).await;
+    graph.add_edge(id_e, vec![id_d]).await; // E is an independent node that also connects to D
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.async_start().await.unwrap();
-    });
+    graph.start().await.unwrap();
 
     let exec_log = executed.lock().unwrap();
     println!("Executed nodes (diamond test): {:?}", *exec_log);
@@ -261,8 +247,8 @@ fn test_branch_pruning_diamond_with_active_alternate_parent() {
 ///
 /// This tests that the pruning state is reset on loop iteration to allow
 /// dynamic routing to select different branches in subsequent iterations.
-#[test]
-fn test_router_in_loop_alternating_branches() {
+#[tokio::test]
+async fn test_router_in_loop_alternating_branches() {
     use dagrs::node::loop_node::{LoopCondition, LoopNode};
 
     let mut graph = Graph::new();
@@ -356,23 +342,20 @@ fn test_router_in_loop_alternating_branches() {
     let id_loop = loop_node.id();
 
     // Add nodes
-    graph.add_node(router);
-    graph.add_node(node_a);
-    graph.add_node(node_b);
-    graph.add_node(loop_node);
+    graph.add_node(router).await;
+    graph.add_node(node_a).await;
+    graph.add_node(node_b).await;
+    graph.add_node(loop_node).await;
 
     // Build topology:
     // Router -> A, B
     // A -> Loop
     // B -> Loop
-    graph.add_edge(id_router, vec![id_a, id_b]);
-    graph.add_edge(id_a, vec![id_loop]);
-    graph.add_edge(id_b, vec![id_loop]);
+    graph.add_edge(id_router, vec![id_a, id_b]).await;
+    graph.add_edge(id_a, vec![id_loop]).await;
+    graph.add_edge(id_b, vec![id_loop]).await;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        graph.async_start().await.unwrap();
-    });
+    graph.start().await.unwrap();
 
     let exec_log = executed.lock().unwrap();
     println!(

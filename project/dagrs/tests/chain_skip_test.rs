@@ -51,8 +51,8 @@ impl Router for SwitchRouter {
     }
 }
 
-#[test]
-fn test_chain_skip_deadlock() {
+#[tokio::test]
+async fn test_chain_skip_deadlock() {
     let mut graph = Graph::new();
     let mut table = NodeTable::new();
 
@@ -89,27 +89,22 @@ fn test_chain_skip_deadlock() {
     );
     let id_router = router.id();
 
-    graph.add_node(router);
-    graph.add_node(node_b);
-    graph.add_node(node_c);
-    graph.add_node(node_d);
+    graph.add_node(router).await;
+    graph.add_node(node_b).await;
+    graph.add_node(node_c).await;
+    graph.add_node(node_d).await;
 
-    graph.add_edge(id_router, vec![id_b]);
-    graph.add_edge(id_b, vec![id_c]);
-    graph.add_edge(id_c, vec![id_d]);
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    graph.add_edge(id_router, vec![id_b]).await;
+    graph.add_edge(id_b, vec![id_c]).await;
+    graph.add_edge(id_c, vec![id_d]).await;
 
     println!("Starting Graph...");
-    rt.block_on(async {
-        // Set timeout to detect deadlock
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(1), graph.async_start()).await;
+    // Set timeout to detect deadlock
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), graph.start()).await;
 
-        match result {
-            Ok(Ok(_)) => println!("Graph finished successfully"),
-            Ok(Err(e)) => panic!("Graph failed: {:?}", e),
-            Err(_) => panic!("Graph timed out! Deadlock detected."),
-        }
-    });
+    match result {
+        Ok(Ok(_)) => println!("Graph finished successfully"),
+        Ok(Err(e)) => panic!("Graph failed: {:?}", e),
+        Err(_) => panic!("Graph timed out! Deadlock detected."),
+    }
 }

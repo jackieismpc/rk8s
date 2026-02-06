@@ -137,7 +137,8 @@ impl TypedAction for ReceiverAction {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Create a node table
     let mut node_table = NodeTable::new();
 
@@ -169,16 +170,16 @@ fn main() {
     let mut graph = Graph::new();
 
     // Add nodes to the graph
-    graph.add_node(sender1);
-    graph.add_node(sender2);
-    graph.add_node(receiver);
+    graph.add_node(sender1).await;
+    graph.add_node(sender2).await;
+    graph.add_node(receiver).await;
 
     // Add edges: both senders connect to the receiver
-    graph.add_edge(sender1_id, vec![receiver_id]);
-    graph.add_edge(sender2_id, vec![receiver_id]);
+    graph.add_edge(sender1_id, vec![receiver_id]).await;
+    graph.add_edge(sender2_id, vec![receiver_id]).await;
 
     // Run the graph
-    match graph.start() {
+    match graph.start().await {
         Ok(_) => (),
         Err(e) => {
             eprintln!("Graph execution failed: {:?}", e);
